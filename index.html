@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html class="dark" lang="es">
+<head>
+    <meta charset="utf-8"/>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <title>Contamelapp - Smart Finance</title>
+    <link rel="icon" type="image/png" href="favicon.png?v=2">
+    <!-- Tailwind CDN (Used by Stitch Export) -->
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#10b981",
+                        "background-light": "#f6f8f7",
+                        "background-dark": "#050a18",
+                    },
+                    fontFamily: {
+                        "display": ["Outfit", "Inter", "sans-serif"]
+                    },
+                },
+            },
+        }
+    </script>
+</head>
+<body class="bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100 antialiased min-h-screen">
+    <div id="app" class="relative flex min-h-screen w-full flex-col max-w-md mx-auto overflow-x-hidden">
+        
+        <!-- Main Content Area (Dynamic) -->
+        <main id="main-content" class="flex-1 transition-all duration-300">
+            <!-- Content will be injected by app.js -->
+        </main>
+
+        <!-- Bottom Navigation Bar -->
+        <nav class="fixed bottom-0 left-0 right-0 max-w-md mx-auto nav-glass px-6 pb-6 pt-3 flex justify-between items-center z-[100]">
+            <a class="nav-item flex flex-col items-center justify-center w-12 h-12 text-primary" href="#" data-view="dashboard">
+                <span class="material-symbols-outlined text-2xl" id="nav-icon-dashboard" style="font-variation-settings: 'FILL' 1">home</span>
+                <span class="text-[10px] font-bold mt-0.5">Inicio</span>
+            </a>
+            <a class="nav-item flex flex-col items-center justify-center w-12 h-12 text-slate-400" href="#" data-view="vault">
+                <span class="material-symbols-outlined text-2xl" id="nav-icon-vault">account_balance_wallet</span>
+                <span class="text-[10px] font-medium mt-0.5">Bóveda</span>
+            </a>
+            
+            <!-- Central FAB: NLU Chat Trigger -->
+            <div class="relative -top-8">
+                <button id="chat-trigger" class="size-14 bg-gradient-to-br from-primary to-emerald-600 text-background-dark rounded-2xl fab-glow flex items-center justify-center border-[6px] border-[#0A1229] active:scale-90 transition-all shadow-2xl">
+                    <span class="material-symbols-outlined text-3xl font-black">bolt</span>
+                </button>
+                <div class="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-primary/20 h-1 w-4 rounded-full blur-[2px]"></div>
+            </div>
+
+            <a class="nav-item flex flex-col items-center justify-center w-12 h-12 text-slate-400" href="#" data-view="social">
+                <span class="material-symbols-outlined text-2xl" id="nav-icon-social">group</span>
+                <span class="text-[10px] font-medium mt-0.5">Social</span>
+            </a>
+            <a class="nav-item flex flex-col items-center justify-center w-12 h-12 text-slate-400" href="#" data-view="settings">
+                <span class="material-symbols-outlined text-2xl" id="nav-icon-settings">settings</span>
+                <span class="text-[10px] font-medium mt-0.5">Ajustes</span>
+            </a>
+        </nav>
+
+        <!-- Chat NLU Modal (Full Screen Overlay) -->
+        <div id="chat-modal" class="fixed inset-0 z-[200] hidden">
+            <div id="chat-backdrop" class="absolute inset-0 bg-background-dark/80 backdrop-blur-sm"></div>
+            <div id="chat-panel" class="absolute inset-0 flex flex-col bg-background-dark translate-y-full transition-transform duration-300">
+                <!-- Chat will be rendered here by ViewTemplates.chat() -->
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
