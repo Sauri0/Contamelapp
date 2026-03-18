@@ -115,17 +115,18 @@ function checkBudget(category, amount, currency) {
 function processRecurring() {
     const now = new Date();
     const currentMonth = `${now.getFullYear()}-${now.getMonth() + 1}`;
-    
-    if (AppState.lastRecurringSync === currentMonth) return;
-
     const dayOfMonth = now.getDate();
     let updated = false;
 
     AppState.recurring.forEach(r => {
-        if (dayOfMonth >= r.day) {
-            // Check if already added this month
+        const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        const dayToProcess = Math.min(r.day || 1, lastDayOfMonth);
+        
+        if (dayOfMonth >= dayToProcess) {
+            // Check if already processed this month for THIS subscription
             const alreadyAdded = AppState.movements.some(m => 
-                m.note === `Recurrente: ${r.name}` && 
+                m.text === r.name && 
+                m.category === 'Suscripción' &&
                 new Date(m.date).getMonth() === now.getMonth() &&
                 new Date(m.date).getFullYear() === now.getFullYear()
             );
@@ -136,10 +137,11 @@ function processRecurring() {
                     type: r.type,
                     amount: r.amount,
                     currency: r.currency,
-                    category: r.category,
-                    note: `Recurrente: ${r.name}`,
+                    category: 'Suscripción',
+                    text: r.name,
                     date: now.toISOString(),
-                    icon: r.type === 'expense' ? 'auto_renew' : 'payments'
+                    icon: r.type === 'expense' ? 'sync' : 'payments',
+                    isRecurring: true // Extra safety for future checks
                 };
 
                 // Deduct from card balance if assigned
@@ -156,15 +158,48 @@ function processRecurring() {
         }
     });
 
-    if (updated) {
-        AppState.lastRecurringSync = currentMonth;
-        saveState();
-    }
+    if (updated) saveState();
 }
 
 function parseLocaleFloat(str) {
     if (typeof str !== 'string') return parseFloat(str) || 0;
-    return parseFloat(str.replace(/\./g, '').replace(',', '.')) || 0;
+    let clean = str.replace(/\s/g, '');
+    
+    // Heuristic: If there is a comma and a dot, comma is usually decimal in es-AR
+    // but if there's only one of them, we check if it's acting as a decimal.
+    if (clean.includes(',') && clean.includes('.')) {
+        // Assume . is thousands and , is decimal
+        return parseFloat(clean.replace(/\./g, '').replace(',', '.')) || 0;
+    }
+    
+    if (clean.includes(',')) {
+        // Only commas? If one comma, it's decimal. If multiple, it's thousands (weird but possible)
+        const parts = clean.split(',');
+        if (parts.length === 2) return parseFloat(clean.replace(',', '.')) || 0;
+        return parseFloat(clean.replace(/,/g, '')) || 0;
+    }
+
+    if (clean.includes('.')) {
+        // Only dots? If one dot AND it's not followed by exactly 3 digits (unless it's the only dot)
+        // Actually, if there's only one dot, many users intend it as a decimal (US style).
+        // If there's more than one dot, it's definitely thousands.
+        const parts = clean.split('.');
+        if (parts.length === 2) {
+            // Check if it looks like thousands (e.g. 1.000)
+            const afterDot = parts[1];
+            if (afterDot.length === 3 && parseInt(parts[0]) < 1000) {
+                // Could be 1.000 (one thousand) or 1.000 (one point zero zero zero).
+                // In finance, usually thousands. But we'll treat single dots as decimals
+                // ONLY if the user is typing decimals. This is tricky.
+                // Let's assume single dot = decimal for values < 1000 or with non-3 decimal length.
+                return parseFloat(clean) || 0; 
+            }
+            return parseFloat(clean) || 0;
+        }
+        return parseFloat(clean.replace(/\./g, '')) || 0;
+    }
+
+    return parseFloat(clean) || 0;
 }
 
 // --- Installment Aging ---
@@ -287,13 +322,13 @@ const ViewTemplates = {
                 <input id="f-rec-name" type="text" class="w-full p-4 rounded-2xl">
             </div>
             <div class="space-y-1">
-                <label class="text-[10px] font-bold text-primary uppercase">Monto</label>
-                <input id="f-rec-amount" type="number" class="w-full p-4 rounded-2xl">
+                <label class="text-[10px] font-bold text-primary uppercase ml-1">Monto</label>
+                <input id="f-rec-amount" type="text" placeholder="0,00" class="w-full p-4 rounded-2xl">
             </div>
             <div class="space-y-1 flex gap-4">
                 <div class="flex-1 space-y-1">
-                    <label class="text-[10px] font-bold text-primary uppercase">Día (1-28)</label>
-                    <input id="f-rec-day" type="number" value="1" class="w-full p-4 rounded-2xl">
+                    <label class="text-[10px] font-bold text-primary uppercase ml-1">Día (1-31)</label>
+                    <input id="f-rec-day" type="number" value="1" min="1" max="31" class="w-full p-4 rounded-2xl">
                 </div>
                 <div class="flex-1 space-y-1">
                     <label class="text-[10px] font-bold text-primary uppercase">Moneda</label>
@@ -1493,8 +1528,34 @@ function removeGoal(name) {
 }
 
 function removeRecurring(name) {
-    if (confirm("¿Eliminar suscripción?")) {
+    if (confirm(`¿Eliminar suscripción "${name}"? Esto también anulará el gasto de este mes si ya se debitó.`)) {
+        const now = new Date();
+        const currentMonth = now.getMonth();
+        const currentYear = now.getFullYear();
+
+        // 1. Find and reverse card balance if it was debit this month
+        // Match by text and category 'Suscripción'
+        const moveToDelete = AppState.movements.find(m => 
+            m.text === name && 
+            m.category === 'Suscripción' &&
+            new Date(m.date).getMonth() === currentMonth &&
+            new Date(m.date).getFullYear() === currentYear
+        );
+
+        if (moveToDelete) {
+            const r = AppState.recurring.find(rec => rec.name === name);
+            if (r && r.cardId) {
+                const card = AppState.cards.find(c => c.id == r.cardId);
+                if (card) {
+                    card.balances[r.currency] -= (r.type === 'income' ? r.amount : -r.amount);
+                }
+            }
+            AppState.movements = AppState.movements.filter(m => m !== moveToDelete);
+        }
+
+        // 2. Remove the recurring template
         AppState.recurring = AppState.recurring.filter(r => r.name !== name);
+        
         saveState();
         renderView('settings');
     }
