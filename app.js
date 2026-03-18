@@ -40,6 +40,18 @@ function loadState() {
         if (!AppState.goals) AppState.goals = [];
         if (!AppState.installments) AppState.installments = [];
         if (!AppState.lastInstallmentSync) AppState.lastInstallmentSync = '';
+        if (!AppState.pendingAction) AppState.pendingAction = null;
+        
+        // Migrate contacts to new balances object
+        AppState.contacts.forEach(c => {
+            if (c.amount !== undefined && !c.balances) {
+                c.balances = { ARS: 0, USD: 0 };
+                c.balances[c.currency || 'ARS'] = c.amount;
+                delete c.amount;
+                delete c.currency;
+            }
+            if (!c.balances) c.balances = { ARS: 0, USD: 0 };
+        });
         return true;
     }
     return false;
@@ -670,19 +682,25 @@ const ViewTemplates = {
             <section class="grid grid-cols-2 gap-4">
                 <div class="glass-card p-4 rounded-2xl">
                     <span class="text-[10px] font-black text-primary uppercase tracking-widest">Me deben</span>
-                    <p class="text-xl font-bold mt-1 text-slate-100 italic">
-                        ${AppState.preferences.displayCurrency === 'USD' ? 
-                            'u$s ' + convert(AppState.contacts.filter(c => c.amount > 0).reduce((acc, c) => acc + convert(c.amount, c.currency || 'ARS', 'ARS'), 0), 'ARS', 'USD').toFixed(0) :
-                            '$' + AppState.contacts.filter(c => c.amount > 0).reduce((acc, c) => acc + convert(c.amount, c.currency || 'ARS', 'ARS'), 0).toLocaleString()}
-                    </p>
+                    <div class="mt-1 space-y-0.5">
+                        <p class="text-sm font-bold text-slate-100 italic">
+                            $${AppState.contacts.reduce((acc, c) => acc + Math.max(0, c.balances?.ARS || 0), 0).toLocaleString()}
+                        </p>
+                        <p class="text-[10px] font-bold text-slate-400 italic">
+                            u$s ${AppState.contacts.reduce((acc, c) => acc + Math.max(0, c.balances?.USD || 0), 0).toLocaleString()}
+                        </p>
+                    </div>
                 </div>
                 <div class="glass-card p-4 rounded-2xl">
                     <span class="text-[10px] font-black text-rose-500 uppercase tracking-widest">Debo</span>
-                    <p class="text-xl font-bold mt-1 text-slate-100 italic">
-                        ${AppState.preferences.displayCurrency === 'USD' ? 
-                            'u$s ' + convert(AppState.contacts.filter(c => c.amount < 0).reduce((acc, c) => acc + Math.abs(convert(c.amount, c.currency || 'ARS', 'ARS')), 0), 'ARS', 'USD').toFixed(0) :
-                            '$' + AppState.contacts.filter(c => c.amount < 0).reduce((acc, c) => acc + Math.abs(c.amount), 0).toLocaleString()}
-                    </p>
+                    <div class="mt-1 space-y-0.5">
+                        <p class="text-sm font-bold text-slate-100 italic">
+                            $${AppState.contacts.reduce((acc, c) => acc + Math.abs(Math.min(0, c.balances?.ARS || 0)), 0).toLocaleString()}
+                        </p>
+                        <p class="text-[10px] font-bold text-slate-400 italic">
+                            u$s ${AppState.contacts.reduce((acc, c) => acc + Math.abs(Math.min(0, c.balances?.USD || 0)), 0).toLocaleString()}
+                        </p>
+                    </div>
                 </div>
             </section>
 
@@ -695,7 +713,10 @@ const ViewTemplates = {
                     <div class="py-12 text-center glass rounded-3xl border-dashed border-white/5">
                         <p class="text-slate-500 text-xs font-bold">Lista de contactos vacía</p>
                     </div>
-                ` : AppState.contacts.map(c => `
+                ` : AppState.contacts.sort((a,b) => (b.balances?.ARS||0) - (a.balances?.ARS||0)).map(c => {
+                    const hasARS = c.balances?.ARS !== 0;
+                    const hasUSD = c.balances?.USD !== 0;
+                    return `
                     <div class="glass-card p-4 rounded-2xl flex items-center justify-between animate-in fade-in slide-in-from-bottom-2 duration-300">
                         <div class="flex items-center gap-4">
                             <div class="size-12 rounded-full bg-slate-800 flex items-center justify-center font-bold text-slate-400 uppercase overflow-hidden text-sm">
@@ -703,20 +724,25 @@ const ViewTemplates = {
                             </div>
                             <div>
                                 <h3 class="font-bold text-slate-100">${c.name}</h3>
-                                <p class="text-[10px] uppercase font-bold ${c.amount > 0 ? 'text-primary' : (c.amount < 0 ? 'text-rose-500' : 'text-slate-500')}">
-                                    ${c.amount > 0 ? 'Me debe' : (c.amount < 0 ? 'Le debo' : 'Al día')}
+                                <p class="text-[9px] uppercase font-bold text-slate-500 tracking-tight">
+                                    ${(c.balances?.ARS > 0 || c.balances?.USD > 0) ? 'Me debe' : (c.balances?.ARS < 0 || c.balances?.USD < 0) ? 'Le debo' : 'Al día'}
                                 </p>
                             </div>
                         </div>
-                        <div class="flex items-center gap-2">
-                            <button onclick="editContact(${c.id})" class="size-8 rounded-full flex items-center justify-center text-slate-500 hover:text-primary transition-colors"><span class="material-symbols-outlined text-sm">edit</span></button>
-                            <button onclick="removeContact(${c.id})" class="size-8 rounded-full flex items-center justify-center text-slate-600 hover:text-rose-500 transition-colors"><span class="material-symbols-outlined text-sm">delete</span></button>
-                            <div class="text-right ml-2 min-w-[60px]">
-                                <p class="font-bold text-slate-100 italic text-sm">${formatCurrency(c.amount, c.currency || 'ARS')}</p>
+                        <div class="flex items-center gap-3">
+                            <div class="text-right">
+                                ${hasARS ? `<p class="font-black text-xs ${c.balances.ARS > 0 ? 'text-primary' : 'text-rose-500'} italic leading-none">${formatCurrency(c.balances.ARS, 'ARS')}</p>` : ''}
+                                ${hasUSD ? `<p class="font-black text-[10px] ${c.balances.USD > 0 ? 'text-primary' : 'text-rose-500'} italic mt-0.5 leading-none">${formatCurrency(c.balances.USD, 'USD')}</p>` : ''}
+                                ${(!hasARS && !hasUSD) ? `<p class="text-[10px] text-slate-600 italic">En cero</p>` : ''}
+                            </div>
+                            <div class="flex flex-col gap-1 border-l border-white/5 pl-2">
+                                <button onclick="editContact(${c.id})" class="text-slate-500 hover:text-primary transition-colors"><span class="material-symbols-outlined text-xs">edit</span></button>
+                                <button onclick="removeContact(${c.id})" class="text-slate-600 hover:text-rose-500 transition-colors"><span class="material-symbols-outlined text-xs">delete</span></button>
                             </div>
                         </div>
                     </div>
-                `).join('')}
+                    `;
+                }).join('')}
             </section>
         </div>
     `,
@@ -1040,17 +1066,68 @@ function attachChatListeners() {
 }
 
 function processCommand(text) {
+    const lower = text.toLowerCase();
+    let reply = "No pude procesar eso. Prueba con: 'Gasté 500,50 en comida' o 'Cobré u$s 100'.";
+
+    // 1. Handle Pending Actions (Interactive Flow)
+    if (AppState.pendingAction) {
+        const action = AppState.pendingAction;
+        if (lower.includes('cancela') || lower.includes('olvidalo')) {
+            AppState.pendingAction = null;
+            reply = "Vale, cancelé la operación anterior. ¿En qué más puedo ayudarte?";
+        } else if (action.type === 'installment_card') {
+            let foundCard = null;
+            AppState.cards.forEach(c => { if (lower.includes(c.name.toLowerCase())) foundCard = c; });
+            
+            if (foundCard) {
+                const data = action.data;
+                AppState.installments.push({
+                    id: Date.now(),
+                    name: data.itemName,
+                    count: data.count,
+                    remaining: data.count,
+                    amount: data.amountVal,
+                    currency: data.currency,
+                    cardId: foundCard.id,
+                    date: new Date().toISOString()
+                });
+                // Deduct first installment from card balance
+                if (!foundCard.balances) foundCard.balances = { ARS: 0, USD: 0 };
+                foundCard.balances[data.currency] -= data.amountVal;
+                
+                AppState.pendingAction = null;
+                saveState();
+                reply = `✅ ¡Listo! Asigné las cuotas de "${data.itemName}" a tu tarjeta **${foundCard.name}**.`;
+                renderView('dashboard');
+            } else {
+                reply = `No encontré esa tarjeta. Las que tenés son: **${AppState.cards.map(c => c.name).join(', ')}**. ¿A cuál la asigno? (O decime 'cancelar')`;
+            }
+        }
+        
+        if (AppState.pendingAction !== action) { // If action resolved/cancelled
+             setTimeout(() => {
+                AppState.chatHistory.push({ role: 'ai', text: reply });
+                const panel = document.getElementById('chat-panel');
+                if (panel && !panel.classList.contains('translate-y-full')) {
+                    panel.innerHTML = ViewTemplates.chat();
+                    attachChatListeners();
+                    const scroller = document.getElementById('chat-scroller');
+                    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+                }
+            }, 800);
+            return;
+        }
+    }
+
     // 0. Detect installments (Cuotas) - Heuristic Approach
     if (text.toLowerCase().includes('cuota')) {
         let count = 0, amountVal = 0, currency = 'ARS', itemName = '', targetCard = null;
-        const lower = text.toLowerCase();
 
         // A. Find Count: A number followed or preceded by "cuota/s"
         const countMatch = text.match(/(\d+)\s*cuotas?/i) || text.match(/cuotas?\s*(?:de\s+)?(\d+)/i);
         if (countMatch) count = parseInt(countMatch[1] || countMatch[2] || 0);
 
-        // B. Find Amount: A number that ISN'T the count and likely has . or , or is large
-        // We look for numbers excluding the count match
+        // B. Find Amount
         const allNumbers = text.match(/\d+[\d\.]*(?:,\d+)?/g);
         let rawAmountStr = '';
         if (allNumbers) {
@@ -1061,7 +1138,6 @@ function processCommand(text) {
                     rawAmountStr = n;
                 }
             });
-            // Fallback
             if (amountVal === 0 && allNumbers.length === 1 && parseInt(allNumbers[0]) !== count) {
                 amountVal = parseFloat(allNumbers[0].replace(/\./g, '').replace(',', '.'));
                 rawAmountStr = allNumbers[0];
@@ -1072,37 +1148,54 @@ function processCommand(text) {
             // C. Find Currency
             if (lower.includes('usd') || lower.includes('u$s') || lower.includes('dolar')) currency = 'USD';
 
-            // D. Find Card
-            AppState.cards.forEach(c => { if (lower.includes(c.name.toLowerCase())) targetCard = c; });
-            if (!targetCard && AppState.cards.length > 0) targetCard = AppState.cards[0];
+            // D. Find Card (EXPLICIT)
+            let explicitCard = null;
+            AppState.cards.forEach(c => { if (lower.includes(c.name.toLowerCase())) explicitCard = c; });
 
             // E. Extract Item Name
             itemName = text
                 .replace(countMatch[0], '')
-                .replace(rawAmountStr, '') // Remove the EXACT raw string found (e.g. 40.000)
+                .replace(rawAmountStr, '') 
                 .replace(/(compr[eó]|pagu[eé]|pago|compra|una?|el|la|de|en|con|tarjeta|ars|usd|u\$s)\s+/gi, ' ')
-                .replace(/(?:ars|usd|u\$s)$/i, '') // Remove currency at the end
-                .replace(new RegExp(targetCard ? targetCard.name : '____', 'gi'), '')
+                .replace(/(?:ars|usd|u\$s)$/i, '')
+                .replace(new RegExp(explicitCard ? explicitCard.name : '____', 'gi'), '')
                 .replace(/\s+/g, ' ')
                 .trim();
             
             if (itemName.length < 2) itemName = 'Compra en cuotas';
             itemName = itemName.charAt(0).toUpperCase() + itemName.slice(1);
 
-            AppState.installments.push({
-                id: Date.now(),
-                name: itemName,
-                count: count,
-                remaining: count,
-                amount: amountVal,
-                currency: currency,
-                cardId: targetCard ? targetCard.id : null,
-                date: new Date().toISOString()
-            });
+            if (!explicitCard && AppState.cards.length > 0) {
+                // ASK THE USER
+                AppState.pendingAction = {
+                    type: 'installment_card',
+                    data: { count, amountVal, currency, itemName }
+                };
+                reply = `Entendido, registré **${count} cuotas de ${formatCurrency(amountVal, currency)}** para "${itemName}". \n\n¿A qué tarjeta lo asigno? Mis opciones son: **${AppState.cards.map(c => c.name).join(', ')}**.`;
+            } else {
+                targetCard = explicitCard || (AppState.cards.length > 0 ? AppState.cards[0] : null);
+                AppState.installments.push({
+                    id: Date.now(),
+                    name: itemName,
+                    count: count,
+                    remaining: count,
+                    amount: amountVal,
+                    currency: currency,
+                    cardId: targetCard ? targetCard.id : null,
+                    date: new Date().toISOString()
+                });
+
+                // Deduct first installment from card if assigned
+                if (targetCard) {
+                    if (!targetCard.balances) targetCard.balances = { ARS: 0, USD: 0 };
+                    targetCard.balances[currency] -= amountVal;
+                }
+                reply = `✅ ¡Perfecto! Registré **${count} cuotas de ${formatCurrency(amountVal, currency)}** para "${itemName}"${targetCard ? ` en la tarjeta ${targetCard.name}` : ''}.`;
+            }
 
             saveState();
             setTimeout(() => {
-                AppState.chatHistory.push({ role: 'ai', text: `✅ ¡Perfecto! Registré **${count} cuotas de ${formatCurrency(amountVal, currency)}** para "${itemName}".` });
+                AppState.chatHistory.push({ role: 'ai', text: reply });
                 renderView('dashboard');
                 // Force chat refresh
                 const chatPanel = document.getElementById('chat-panel');
@@ -1126,7 +1219,7 @@ function processCommand(text) {
         amount = parseFloat(clean);
     }
     
-    let reply = "No pude procesar eso. Prueba con: 'Gasté 500,50 en comida' o 'Cobré u$s 100'.";
+    reply = "No pude procesar eso. Prueba con: 'Gasté 500,50 en comida' o 'Cobré u$s 100'.";
     
     if (amount > 0) {
         const lower = text.toLowerCase();
@@ -1178,34 +1271,27 @@ function processCommand(text) {
 
         // Unified Contact Accounting
         if (targetContact) {
-            // My mental model: positive = he owes me, negative = I owe him
-            // "Le debo 300" -> lowers balance
-            // "Me debe 300" -> increases balance
-            // "Pagué 300" -> increases balance (reduces debt)
-            // "Me pagó 300" -> decreases balance (settles what he owed)
-            
-            // Verbs that imply I am giving money (Expense for me, Gain for the balance)
-            const givingMoneyVerbs = ['le di', 'pagué', 'presté', 'le pagué', 'le presté', 'le pasé'];
-            // Verbs that imply I am receiving money (Income for me, Loss for the balance)
-            const receivingMoneyVerbs = ['me dio', 'me pagó', 'me prestó', 'recibí', 'cobré'];
-            
             let delta = 0;
+            const givingMoneyVerbs = ['le di', 'pagué', 'presté', 'le pagué', 'le presté', 'le pasé'];
+            const receivingMoneyVerbs = ['me dio', 'me pagó', 'me prestó', 'recibí', 'cobré'];
+
             if (lower.includes('debo') || lower.includes('deuda')) {
-                delta = -amount; // Explicit debt increase
+                delta = -amount;
             } else if (givingMoneyVerbs.some(v => lower.includes(v)) || type === 'expense') {
-                delta = amount; // I gave money -> he owes me more/I owe him less
+                delta = amount;
             } else if (receivingMoneyVerbs.some(v => lower.includes(v)) || type === 'income') {
-                delta = -amount; // He gave me money -> he owes me less/I owe him more
+                delta = -amount;
             }
 
-            targetContact.amount += delta;
-            targetContact.currency = currency; // Keep track of the last currency used for this person
+            if (!targetContact.balances) targetContact.balances = { ARS: 0, USD: 0 };
+            targetContact.balances[currency] += delta;
             
             if (!targetContact.history) targetContact.history = [];
-            targetContact.history.unshift({ date: new Date().toISOString(), amount, type, note: text });
+            targetContact.history.unshift({ date: new Date().toISOString(), amount, type, currency, note: text });
 
-            const status = targetContact.amount > 0 ? 'te debe' : (targetContact.amount < 0 ? 'le debes' : 'está al día con');
-            reply = `📝 ¡Entendido! Registré el movimiento con ${targetContact.name}. Ahora ${status} ${formatCurrency(Math.abs(targetContact.amount), currency)}.`;
+            const currentBalance = targetContact.balances[currency];
+            const status = currentBalance > 0 ? 'te debe' : (currentBalance < 0 ? 'le debes' : 'está al día con');
+            reply = `📝 ¡Entendido! Registré el movimiento con ${targetContact.name}. Ahora ${status} ${formatCurrency(Math.abs(currentBalance), currency)}${currency === 'USD' ? ' y también tiene saldo en ARS' : ''}.`;
         }
 
         // Card update
@@ -1343,10 +1429,9 @@ function renderView(view) {
                         AppState.contacts.push({ 
                             id: Date.now(), 
                             name, 
-                            amount: 0, 
+                            balances: { ARS: 0, USD: 0 },
                             photo: photoBase64,
                             history: [],
-                            currency: 'ARS',
                             date: 'Hoy'
                         });
                         saveState();
