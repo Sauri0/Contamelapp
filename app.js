@@ -214,6 +214,105 @@ function parseLocaleFloat(str) {
     return parseFloat(clean) || 0;
 }
 
+// --- Fuzzy Matching Logic ---
+function normalizeString(str) {
+    return str.toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Remove accents
+        .replace(/[^a-z0-9\s]/g, "") // Remove special chars
+        .trim();
+}
+
+function getSimilarity(s1, s2) {
+    const longer = s1.length < s2.length ? s2 : s1;
+    const shorter = s1.length < s2.length ? s1 : s2;
+    if (longer.length === 0) return 1.0;
+    
+    // Simple Levenshtein-based similarity
+    const distance = (function(a, b) {
+        if (a.length === 0) return b.length;
+        if (b.length === 0) return a.length;
+        const matrix = Array.from({ length: b.length + 1 }, () => []);
+        for (let i = 0; i <= b.length; i++) matrix[i][0] = i;
+        for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+        for (let i = 1; i <= b.length; i++) {
+            for (let j = 1; j <= a.length; j++) {
+                const cost = a[j - 1] === b[i - 1] ? 0 : 1;
+                matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost);
+            }
+        }
+        return matrix[b.length][a.length];
+    })(longer, shorter);
+
+    return (longer.length - distance) / longer.length;
+}
+
+function fuzzyMatch(input, list, key, threshold = 0.7) {
+    const normalizedInput = normalizeString(input);
+    if (!normalizedInput) return null;
+
+    let bestMatch = null;
+    let highestSimilarity = 0;
+    let matchedSegment = "";
+
+    // First try: Exact substring match (high priority)
+    for (const item of list) {
+        const itemValue = normalizeString(item[key]);
+        // Check if item name is in input or vice versa
+        if (normalizedInput.includes(itemValue)) {
+            // Find the actual segment in the input (not normalized for removal)
+            const regex = new RegExp(itemValue.split('').map(c => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[^a-z0-9]*').join(''), 'i');
+            const match = input.match(regex);
+            return { item, similarity: 1.0, exact: true, segment: match ? match[0] : item[key] };
+        }
+    }
+
+    // Second try: Fuzzy word-by-word match
+    const inputWords = normalizedInput.split(/\s+/);
+    
+    for (const item of list) {
+        const itemValue = normalizeString(item[key]);
+        const itemWords = itemValue.split(/\s+/);
+        
+        // Compare full strings
+        const similarity = getSimilarity(normalizedInput, itemValue);
+        
+        // Check word by word
+        let maxWordSimilarity = 0;
+        let bestWordSegment = "";
+        
+        inputWords.forEach(iw => {
+            itemWords.forEach(itw => {
+                const s = getSimilarity(iw, itw);
+                if (s > maxWordSimilarity) {
+                    maxWordSimilarity = s;
+                    bestWordSegment = iw;
+                }
+            });
+        });
+
+        const finalScore = Math.max(similarity, maxWordSimilarity * 0.9);
+
+        if (finalScore > highestSimilarity && finalScore >= threshold) {
+            highestSimilarity = finalScore;
+            bestMatch = item;
+            
+            // Determine matched segment
+            if (similarity > maxWordSimilarity * 0.9) {
+                // The whole input matched somewhat
+                matchedSegment = input;
+            } else {
+                // A specific word matched best
+                // Find the original word in the input
+                const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const wordMatch = input.match(new RegExp(escapeRegex(bestWordSegment), 'i'));
+                matchedSegment = wordMatch ? wordMatch[0] : bestWordSegment;
+            }
+        }
+    }
+
+    return bestMatch ? { item: bestMatch, similarity: highestSimilarity, exact: false, segment: matchedSegment } : null;
+}
+
 // --- Installment Aging ---
 function processInstallments() {
     const now = new Date();
@@ -1076,8 +1175,9 @@ function processCommand(text) {
             AppState.pendingAction = null;
             reply = "Vale, cancelé la operación anterior. ¿En qué más puedo ayudarte?";
         } else if (action.type === 'installment_card') {
-            let foundCard = null;
-            AppState.cards.forEach(c => { if (lower.includes(c.name.toLowerCase())) foundCard = c; });
+            // Try to find the card name in the text
+            const cardMatch = fuzzyMatch(text, AppState.cards, 'name');
+            foundCard = cardMatch ? cardMatch.item : null;
             
             if (foundCard) {
                 const data = action.data;
@@ -1100,7 +1200,7 @@ function processCommand(text) {
                 reply = `✅ ¡Listo! Asigné las cuotas de "${data.itemName}" a tu tarjeta **${foundCard.name}**.`;
                 renderView('dashboard');
             } else {
-                reply = `No encontré esa tarjeta. Las que tenés son: **${AppState.cards.map(c => c.name).join(', ')}**. ¿A cuál la asigno? (O decime 'cancelar')`;
+                reply = `No encontré esa tarjeta. Las que tenés son: **${AppState.cards.map(c => c.name).join(', ')}**. \n\n¿A cuál la asigno? (O decime 'cancelar')`;
             }
         }
         
@@ -1148,19 +1248,23 @@ function processCommand(text) {
             // C. Find Currency
             if (lower.includes('usd') || lower.includes('u$s') || lower.includes('dolar')) currency = 'USD';
 
-            // D. Find Card (EXPLICIT)
-            let explicitCard = null;
-            AppState.cards.forEach(c => { if (lower.includes(c.name.toLowerCase())) explicitCard = c; });
+            // D. Find Card (FUZZY)
+            const cardMatch = fuzzyMatch(text, AppState.cards, 'name');
+            let explicitCard = cardMatch ? cardMatch.item : null;
 
             // E. Extract Item Name
+            const cardSegment = cardMatch ? cardMatch.segment : '';
             itemName = text
                 .replace(countMatch[0], '')
                 .replace(rawAmountStr, '') 
                 .replace(/(compr[eó]|pagu[eé]|pago|compra|una?|el|la|de|en|con|tarjeta|ars|usd|u\$s)\s+/gi, ' ')
-                .replace(/(?:ars|usd|u\$s)$/i, '')
-                .replace(new RegExp(explicitCard ? explicitCard.name : '____', 'gi'), '')
-                .replace(/\s+/g, ' ')
-                .trim();
+                .replace(/(?:ars|usd|u\$s)$/i, '');
+            
+            if (cardSegment) {
+                itemName = itemName.replace(cardSegment, '');
+            }
+
+            itemName = itemName.replace(/\s+/g, ' ').trim();
             
             if (itemName.length < 2) itemName = 'Compra en cuotas';
             itemName = itemName.charAt(0).toUpperCase() + itemName.slice(1);
@@ -1190,7 +1294,8 @@ function processCommand(text) {
                     if (!targetCard.balances) targetCard.balances = { ARS: 0, USD: 0 };
                     targetCard.balances[currency] -= amountVal;
                 }
-                reply = `✅ ¡Perfecto! Registré **${count} cuotas de ${formatCurrency(amountVal, currency)}** para "${itemName}"${targetCard ? ` en la tarjeta ${targetCard.name}` : ''}.`;
+                const isFuzzy = cardMatch && !cardMatch.exact;
+                reply = `✅ ¡Perfecto! Registré **${count} cuotas de ${formatCurrency(amountVal, currency)}** para "${itemName}"${targetCard ? ` en la tarjeta ${targetCard.name}` : ''}.${isFuzzy ? ` *(Entendí "${cardMatch.segment}" como ${targetCard.name})*` : ''}`;
             }
 
             saveState();
@@ -1240,8 +1345,11 @@ function processCommand(text) {
         let targetCard = null;
         let targetContact = null;
 
-        AppState.cards.forEach(c => { if (lower.includes(c.name.toLowerCase())) targetCard = c; });
-        AppState.contacts.forEach(c => { if (lower.includes(c.name.toLowerCase())) targetContact = c; });
+        const cardMatch = fuzzyMatch(text, AppState.cards, 'name');
+        const contactMatch = fuzzyMatch(text, AppState.contacts, 'name');
+        
+        targetCard = cardMatch ? cardMatch.item : null;
+        targetContact = contactMatch ? contactMatch.item : null;
 
         // Logic split: Meta vs Contact vs General
         if (goalVerbs.some(v => lower.includes(v))) {
@@ -1298,7 +1406,13 @@ function processCommand(text) {
         if (targetCard) {
             if (!targetCard.balances) targetCard.balances = { ARS: 0, USD: 0 };
             targetCard.balances[currency] += (type === 'income' ? amount : -amount);
-            reply += ` (En ${targetCard.name})`;
+            const isFuzzy = cardMatch && !cardMatch.exact;
+            reply += ` (En ${targetCard.name})${isFuzzy ? ` *(Detecté "${cardMatch.segment}")*` : ''}`;
+        }
+
+        if (targetContact) {
+            const isFuzzy = contactMatch && !contactMatch.exact;
+            if (isFuzzy) reply += ` *(Identifiqué a "${contactMatch.segment}" como ${targetContact.name})*`;
         }
 
         const newMovement = {
