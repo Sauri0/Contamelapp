@@ -38,6 +38,8 @@ function loadState() {
         if (!AppState.rates.USD_AVG) AppState.rates.USD_AVG = (AppState.rates.USD_BUY + AppState.rates.USD_SELL) / 2;
         if (!AppState.budgets) AppState.budgets = [];
         if (!AppState.goals) AppState.goals = [];
+        if (!AppState.installments) AppState.installments = [];
+        if (!AppState.lastInstallmentSync) AppState.lastInstallmentSync = '';
         return true;
     }
     return false;
@@ -139,6 +141,15 @@ function processRecurring() {
                     date: now.toISOString(),
                     icon: r.type === 'expense' ? 'auto_renew' : 'payments'
                 };
+
+                // Deduct from card balance if assigned
+                if (r.cardId) {
+                    const card = AppState.cards.find(c => c.id == r.cardId);
+                    if (card) {
+                        card.balances[r.currency] += (r.type === 'income' ? r.amount : -r.amount);
+                    }
+                }
+
                 AppState.movements.unshift(newMovement);
                 updated = true;
             }
@@ -149,6 +160,31 @@ function processRecurring() {
         AppState.lastRecurringSync = currentMonth;
         saveState();
     }
+}
+
+function parseLocaleFloat(str) {
+    if (typeof str !== 'string') return parseFloat(str) || 0;
+    return parseFloat(str.replace(/\./g, '').replace(',', '.')) || 0;
+}
+
+// --- Installment Aging ---
+function processInstallments() {
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${now.getMonth() + 1}`;
+    
+    // We reuse lastRecurringSync for simplicity or add lastInstallmentSync
+    if (AppState.lastInstallmentSync === currentMonth) return;
+
+    AppState.installments.forEach(ins => {
+        if (ins.remaining > 0) {
+            ins.remaining--;
+            // Optional: Create a movement automatically?
+            // User didn't ask for auto-movement, just displaying remaining.
+        }
+    });
+
+    AppState.lastInstallmentSync = currentMonth;
+    saveState();
 }
 
 // --- View Templates ---
@@ -274,6 +310,13 @@ const ViewTemplates = {
                     <option value="income">Ingreso</option>
                 </select>
             </div>
+            <div class="space-y-1">
+                <label class="text-[10px] font-bold text-primary uppercase ml-1">Tarjeta Asociada</label>
+                <select id="f-rec-card" class="w-full p-4 rounded-2xl">
+                    <option value="">Ninguna</option>
+                    ${AppState.cards.map(c => `<option value="${c.id}">${c.name} (•••• ${c.last4})</option>`).join('')}
+                </select>
+            </div>
         </div>
     `,
     contactForm: () => `
@@ -331,6 +374,13 @@ const ViewTemplates = {
                 const val = m.type === 'income' ? m.amount : -m.amount;
                 if (m.currency === 'USD') usd += val; else ars += val;
             });
+            // Subtract current month installments from net worth
+            AppState.installments.forEach(ins => {
+                if (ins.remaining > 0) {
+                    if (ins.currency === 'USD') usd -= ins.amount;
+                    else ars -= ins.amount;
+                }
+            });
             return { ars, usd };
         };
 
@@ -357,10 +407,7 @@ const ViewTemplates = {
 
         return `
         <header class="flex items-center p-4 justify-between sticky top-0 z-50 bg-background-light/80 dark:bg-background-dark/80 backdrop-blur-md font-display">
-            <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/20">
-                <span class="material-symbols-outlined text-primary">person</span>
-            </div>
-            <h2 class="text-slate-900 dark:text-slate-100 text-lg font-bold leading-tight tracking-tight flex-1 text-center">Contamelapp</h2>
+            <h2 class="text-slate-900 dark:text-slate-100 text-lg font-bold leading-tight tracking-tight flex-1 text-left">Contamelapp</h2>
             <div class="flex w-10 items-center justify-end">
                 <button id="toggle-currency" class="flex items-center justify-center rounded-lg size-10 bg-primary/10 text-primary active:scale-90 transition-transform"><span class="material-symbols-outlined">currency_exchange</span></button>
             </div>
@@ -472,6 +519,35 @@ const ViewTemplates = {
                 </div>
             </div>
         </section>
+
+        <!-- Pagos en Cuotas -->
+        ${AppState.installments.length > 0 ? `
+        <section class="px-4 py-2">
+            <h3 class="text-slate-100 text-[10px] font-black uppercase tracking-widest mb-3 opacity-60">Pagos en Cuotas</h3>
+            <div class="flex gap-4 overflow-x-auto no-scrollbar pb-2">
+                ${AppState.installments.filter(ins => ins.remaining > 0).map(ins => {
+                    const card = AppState.cards.find(c => c.id == ins.cardId);
+                    const cardName = card ? card.name : 'Efectivo';
+                    return `
+                    <div class="min-w-[200px] glass p-4 rounded-3xl shrink-0">
+                        <div class="flex justify-between items-start mb-2">
+                            <p class="text-[10px] font-bold text-slate-300 uppercase truncate pr-2">${ins.name}</p>
+                            <div class="flex items-center gap-1">
+                                <span class="text-[8px] bg-white/5 px-2 py-0.5 rounded-full text-slate-400">${ins.count - ins.remaining + 1}/${ins.count}</span>
+                                <button onclick="removeInstallment(${ins.id})" class="text-rose-500/50 hover:text-rose-500 active:scale-90 transition-all"><span class="material-symbols-outlined text-[10px]">delete</span></button>
+                            </div>
+                        </div>
+                        <p class="text-lg font-black text-slate-100 leading-tight">${formatCurrency(ins.amount, ins.currency)}</p>
+                        <div class="flex items-center gap-1 mt-2">
+                            <span class="material-symbols-outlined text-[10px] text-primary">credit_card</span>
+                            <span class="text-[9px] text-slate-500 font-bold uppercase">${cardName}</span>
+                        </div>
+                    </div>
+                    `;
+                }).join('')}
+            </div>
+        </section>
+        ` : ''}
 
         <section class="px-6 py-2 flex justify-between items-center mt-4">
             <h3 class="text-slate-100 font-bold">Actividad Reciente</h3>
@@ -788,7 +864,8 @@ const ViewTemplates = {
 async function initApp() {
     loadState();
     await syncRates();
-    processRecurring(); // Check subscriptions
+    processRecurring(); 
+    processInstallments();
     if (!AppState.auth.isLoggedIn) {
         renderAuth();
     } else {
@@ -928,6 +1005,83 @@ function attachChatListeners() {
 }
 
 function processCommand(text) {
+    // 0. Detect installments (Cuotas) - Heuristic Approach
+    if (text.toLowerCase().includes('cuota')) {
+        let count = 0, amountVal = 0, currency = 'ARS', itemName = '', targetCard = null;
+        const lower = text.toLowerCase();
+
+        // A. Find Count: A number followed or preceded by "cuota/s"
+        const countMatch = text.match(/(\d+)\s*cuotas?/i) || text.match(/cuotas?\s*(?:de\s+)?(\d+)/i);
+        if (countMatch) count = parseInt(countMatch[1] || countMatch[2] || 0);
+
+        // B. Find Amount: A number that ISN'T the count and likely has . or , or is large
+        // We look for numbers excluding the count match
+        const allNumbers = text.match(/\d+[\d\.]*(?:,\d+)?/g);
+        let rawAmountStr = '';
+        if (allNumbers) {
+            allNumbers.forEach(n => {
+                const val = parseFloat(n.replace(/\./g, '').replace(',', '.'));
+                if (val !== count && val > 0) {
+                    amountVal = val;
+                    rawAmountStr = n;
+                }
+            });
+            // Fallback
+            if (amountVal === 0 && allNumbers.length === 1 && parseInt(allNumbers[0]) !== count) {
+                amountVal = parseFloat(allNumbers[0].replace(/\./g, '').replace(',', '.'));
+                rawAmountStr = allNumbers[0];
+            }
+        }
+
+        if (count > 0 && amountVal > 0) {
+            // C. Find Currency
+            if (lower.includes('usd') || lower.includes('u$s') || lower.includes('dolar')) currency = 'USD';
+
+            // D. Find Card
+            AppState.cards.forEach(c => { if (lower.includes(c.name.toLowerCase())) targetCard = c; });
+            if (!targetCard && AppState.cards.length > 0) targetCard = AppState.cards[0];
+
+            // E. Extract Item Name
+            itemName = text
+                .replace(countMatch[0], '')
+                .replace(rawAmountStr, '') // Remove the EXACT raw string found (e.g. 40.000)
+                .replace(/(compr[eó]|pagu[eé]|pago|compra|una?|el|la|de|en|con|tarjeta|ars|usd|u\$s)\s+/gi, ' ')
+                .replace(/(?:ars|usd|u\$s)$/i, '') // Remove currency at the end
+                .replace(new RegExp(targetCard ? targetCard.name : '____', 'gi'), '')
+                .replace(/\s+/g, ' ')
+                .trim();
+            
+            if (itemName.length < 2) itemName = 'Compra en cuotas';
+            itemName = itemName.charAt(0).toUpperCase() + itemName.slice(1);
+
+            AppState.installments.push({
+                id: Date.now(),
+                name: itemName,
+                count: count,
+                remaining: count,
+                amount: amountVal,
+                currency: currency,
+                cardId: targetCard ? targetCard.id : null,
+                date: new Date().toISOString()
+            });
+
+            saveState();
+            setTimeout(() => {
+                AppState.chatHistory.push({ role: 'ai', text: `✅ ¡Perfecto! Registré **${count} cuotas de ${formatCurrency(amountVal, currency)}** para "${itemName}".` });
+                renderView('dashboard');
+                // Force chat refresh
+                const chatPanel = document.getElementById('chat-panel');
+                if (chatPanel && !chatPanel.classList.contains('translate-y-full')) {
+                    chatPanel.innerHTML = ViewTemplates.chat();
+                    attachChatListeners();
+                    const scroller = document.getElementById('chat-scroller');
+                    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+                }
+            }, 800);
+            return;
+        }
+    }
+
     // Recognize numbers with , as decimal and . as thousands
     // Example: "300.000,50" -> we need to remove . and replace , with . for parseFloat
     const rawMatch = text.match(/\d+[\d\.]*(?:,\d+)?/);
@@ -1123,8 +1277,8 @@ function renderView(view) {
         if (addBtn) addBtn.onclick = () => {
             showModal("Nueva Tarjeta", ViewTemplates.cardForm(), "save-card", "Crear Tarjeta", () => {
                 const name = document.getElementById('f-card-name').value;
-                const balARS = parseFloat(document.getElementById('f-card-balance-ars').value) || 0;
-                const balUSD = parseFloat(document.getElementById('f-card-balance-usd').value) || 0;
+                const balARS = parseLocaleFloat(document.getElementById('f-card-balance-ars').value);
+                const balUSD = parseLocaleFloat(document.getElementById('f-card-balance-usd').value);
                 const last4 = document.getElementById('f-card-last4').value;
                 
                 if (name) {
@@ -1216,7 +1370,7 @@ function renderView(view) {
             addBudgetBtn.onclick = () => {
                 showModal("Nuevo Presupuesto", ViewTemplates.budgetForm(), "save-budget", "Establecer Límite", () => {
                     const cat = document.getElementById('f-budget-cat').value;
-                    const limit = parseFloat(document.getElementById('f-budget-limit').value);
+                    const limit = parseLocaleFloat(document.getElementById('f-budget-limit').value);
                     const currency = document.getElementById('f-budget-currency').value;
                     if (cat && !isNaN(limit)) {
                         AppState.budgets.push({ category: cat, limit, currency });
@@ -1232,7 +1386,7 @@ function renderView(view) {
             addGoalBtn.onclick = () => {
                 showModal("Nueva Meta de Ahorro", ViewTemplates.goalForm(), "save-goal", "Crear Meta", () => {
                     const name = document.getElementById('f-goal-name').value;
-                    const target = parseFloat(document.getElementById('f-goal-target').value);
+                    const target = parseLocaleFloat(document.getElementById('f-goal-target').value);
                     const currency = document.getElementById('f-goal-currency').value;
                     if (name && !isNaN(target)) {
                         AppState.goals.push({ name, target, current: 0, currency });
@@ -1248,13 +1402,14 @@ function renderView(view) {
             addRecurringBtn.onclick = () => {
                 showModal("Nueva Suscripción", ViewTemplates.recurringForm(), "save-rec", "Guardar", () => {
                     const name = document.getElementById('f-rec-name').value;
-                    const amount = parseFloat(document.getElementById('f-rec-amount').value);
+                    const amount = parseLocaleFloat(document.getElementById('f-rec-amount').value);
                     const day = parseInt(document.getElementById('f-rec-day').value);
                     const currency = document.getElementById('f-rec-currency').value;
                     const type = document.getElementById('f-rec-type').value;
+                    const cardId = document.getElementById('f-rec-card').value;
                     
                     if (name && !isNaN(amount) && day > 0 && day <= 31) {
-                        AppState.recurring.push({ name, amount, currency, category: 'Suscripción', day, type });
+                        AppState.recurring.push({ name, amount, currency, category: 'Suscripción', day, type, cardId });
                         saveState();
                         renderView('settings');
                     }
@@ -1345,6 +1500,14 @@ function removeRecurring(name) {
     }
 }
 
+function removeInstallment(id) {
+    if (confirm("¿Eliminar este pago en cuotas?")) {
+        AppState.installments = AppState.installments.filter(ins => ins.id !== id);
+        saveState();
+        renderView('dashboard');
+    }
+}
+
 function removeCard(id) {
     if (confirm("¿Eliminar esta tarjeta? Se borrarán sus saldos.")) {
         AppState.cards = AppState.cards.filter(c => c.id !== id);
@@ -1393,8 +1556,8 @@ function editCard(id) {
 
     showModal("Editar Tarjeta", ViewTemplates.cardForm(), "update-card", "Guardar Cambios", () => {
         const name = document.getElementById('f-card-name').value;
-        const balARS = parseFloat(document.getElementById('f-card-balance-ars').value) || 0;
-        const balUSD = parseFloat(document.getElementById('f-card-balance-usd').value) || 0;
+        const balARS = parseLocaleFloat(document.getElementById('f-card-balance-ars').value);
+        const balUSD = parseLocaleFloat(document.getElementById('f-card-balance-usd').value);
         const last4 = document.getElementById('f-card-last4').value;
         
         if (name) {
