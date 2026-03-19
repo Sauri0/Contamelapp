@@ -896,7 +896,7 @@ const ViewTemplates = {
 
         <section class="px-6 py-2 flex justify-between items-center mt-4">
             <h3 class="text-slate-100 font-bold">Actividad Reciente</h3>
-            <button class="text-primary text-xs font-bold uppercase tracking-widest">Ver Todo</button>
+            <button id="view-all-activity" class="text-primary text-xs font-bold uppercase tracking-widest transition-all hover:scale-105 active:scale-95">Ver Todo</button>
         </section>
 
         <section id="recent-list" class="px-4 space-y-3 pb-32">
@@ -925,6 +925,48 @@ const ViewTemplates = {
             `).join('')}
         </section>
     `;
+    },
+
+    history: () => {
+        return `
+        <div class="px-6 py-8 view-transition font-display bg-gradient-to-b from-navy-dark to-background-dark min-h-screen">
+            <div class="flex items-center gap-4 mb-8">
+                <button onclick="renderView('dashboard')" class="size-10 rounded-full glass flex items-center justify-center text-slate-400 hover:text-white transition-all hover:scale-110 active:scale-90">
+                    <span class="material-symbols-outlined">arrow_back</span>
+                </button>
+                <div>
+                    <h2 class="text-2xl font-extrabold tracking-tighter italic">Historial<span class="text-primary">.</span></h2>
+                    <p class="text-slate-500 text-[10px] font-black uppercase tracking-widest leading-none">Todos los movimientos</p>
+                </div>
+            </div>
+
+            <section class="space-y-3 pb-32">
+                ${AppState.movements.length === 0 ? `
+                    <div class="py-12 text-center">
+                        <div class="size-16 rounded-full glass mx-auto flex items-center justify-center text-slate-800 mb-4">
+                            <span class="material-symbols-outlined text-3xl text-slate-600">inbox</span>
+                        </div>
+                        <p class="text-slate-500 text-[10px] font-black uppercase tracking-widest">Sin movimientos</p>
+                    </div>
+                ` : AppState.movements.map(m => `
+                    <div class="flex items-center justify-between p-3 glass rounded-xl border border-white/5">
+                        <div class="flex items-center gap-3">
+                            <div class="size-10 rounded-full bg-slate-800 flex items-center justify-center shadow-lg">
+                                <span class="material-symbols-outlined text-slate-400 text-xl">${m.icon}</span>
+                            </div>
+                            <div>
+                                <p class="text-sm font-bold text-slate-100 leading-none mb-1">${m.text}</p>
+                                <p class="text-[9px] text-slate-500 uppercase font-black tracking-tighter">${m.category} • ${m.date}</p>
+                            </div>
+                        </div>
+                        <p class="font-black text-sm ${m.type === 'income' ? 'text-primary' : 'text-rose-500'}">
+                            ${m.type === 'income' ? '+' : '-'}${formatCurrency(m.amount, m.currency)}
+                        </p>
+                    </div>
+                `).join('')}
+            </section>
+        </div>
+        `;
     },
 
     vault: () => {
@@ -1750,6 +1792,9 @@ function renderView(view) {
         const analyticsBtn = document.getElementById('analytics-btn');
         if (analyticsBtn) analyticsBtn.onclick = () => renderView('analytics');
 
+        const viewAllBtn = document.getElementById('view-all-activity');
+        if (viewAllBtn) viewAllBtn.onclick = () => renderView('history');
+
         const netWorthBtn = document.getElementById('net-worth-toggle');
         if (netWorthBtn) netWorthBtn.onclick = toggleDisplayCurrency;
     }
@@ -1800,6 +1845,7 @@ function renderView(view) {
                     
                     if (name && !isNaN(amount) && day > 0 && day <= 31) {
                         AppState.recurring.push({ name, amount, currency, category: 'Suscripción', day, type, cardId });
+                        processRecurring();
                         saveState();
                         renderView('plan');
                     }
