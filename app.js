@@ -533,9 +533,15 @@ const ViewTemplates = {
             }
         }
 
-        // Net Worth (Reuse Dashboard Logic for Consistency)
-        const netARS = AppState.cards.reduce((acc, c) => acc + (c.balances?.ARS || 0), 0);
-        const netUSD = AppState.cards.reduce((acc, c) => acc + (c.balances?.USD || 0), 0);
+        // Net Worth (Include contacts for accurate Debt/Credit accounting)
+        const contactNet = AppState.contacts.reduce((acc, c) => {
+            acc.ARS += (c.balances?.ARS || 0);
+            acc.USD += (c.balances?.USD || 0);
+            return acc;
+        }, { ARS: 0, USD: 0 });
+
+        const netARS = AppState.cards.reduce((acc, c) => acc + (c.balances?.ARS || 0), 0) + contactNet.ARS;
+        const netUSD = AppState.cards.reduce((acc, c) => acc + (c.balances?.USD || 0), 0) + contactNet.USD;
         
         return `
         <div class="px-6 py-8 view-transition font-display relative bg-gradient-to-b from-navy-dark to-background-dark">
@@ -548,12 +554,12 @@ const ViewTemplates = {
             </div>
 
             <!-- Global Balance Focus -->
-            <div class="glass p-8 rounded-[40px] border-white/5 mb-8 text-center relative overflow-hidden">
+            <div class="glass px-4 py-8 rounded-[40px] border-white/5 mb-8 text-center relative overflow-hidden">
                 <div class="absolute inset-0 bg-primary/5 blur-3xl rounded-full"></div>
                 <p class="text-[10px] font-black text-primary uppercase tracking-[0.4em] mb-4 opacity-80 italic relative z-10">Balance Neto Total</p>
-                <div class="flex flex-col items-center gap-2 relative z-10">
-                    <p class="text-4xl font-black text-white italic tracking-tighter leading-none">$ ${netARS.toLocaleString()}</p>
-                    <p class="text-4xl font-bold text-emerald-400 italic tracking-tight opacity-90">u$s ${netUSD.toLocaleString()}</p>
+                <div class="flex flex-col items-center gap-2 relative z-10 w-full overflow-hidden">
+                    <p class="text-4xl font-black text-white italic tracking-tighter leading-none break-all">$ ${netARS.toLocaleString()}</p>
+                    <p class="text-4xl font-bold text-emerald-400 italic tracking-tight opacity-90 break-all">u$s ${netUSD.toLocaleString()}</p>
                 </div>
             </div>
 
