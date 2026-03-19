@@ -62,6 +62,25 @@ function loadState() {
             }
             if (!c.balances) c.balances = { ARS: 0, USD: 0 };
         });
+        
+        // Data Repair: Link existing movements to contacts to avoid double-counting in Net Worth
+        AppState.movements.forEach(m => {
+            if (!m.cardId && !m.contactId) {
+                const contact = AppState.contacts.find(c => {
+                    return c.history && c.history.some(h => 
+                        Math.abs(h.amount - m.amount) < 0.01 && 
+                        h.type === m.type &&
+                        (m.text.includes(c.name) || (h.note && h.note.includes(c.name)))
+                    );
+                });
+                if (contact) m.contactId = contact.id;
+            }
+        });
+
+        // Chat Persistence Fix: Reset history on load (session-only chat)
+        AppState.chatHistory = [
+            { role: 'ai', text: '¡Hola! Soy tu asistente de Contamelapp. ¿Cómo puedo ayudarte hoy?' }
+        ];
 
         // Migrate cards to include type
         AppState.cards.forEach(c => {
@@ -1686,8 +1705,10 @@ function processCommand(text) {
         let icon = 'shopping_cart';
         let currency = 'ARS';
 
-        if (lower.includes('u$s') || lower.includes('usd') || lower.includes('dolar') || lower.includes('dólar')) {
+        if (lower.match(/\bu\$s\b|\busd\b|\bdolar\b|\bdólar\b/i) || text.includes('u$s')) {
             currency = 'USD';
+        } else if (lower.match(/\bars\b|\bpesos\b|\b\$\b/i)) {
+            currency = 'ARS';
         }
 
         const incomeVerbs = ['cobré', 'gano', 'recibí', 'ingreso', 'sueldo', 'pago de', 'depósito', 'regalo', 'premio', 'encontré', 'ventas', 'comisión', 'me dio', 'me pagó', 'me prestó'];
@@ -1760,16 +1781,17 @@ function processCommand(text) {
             reply = `📝 ¡Entendido! Registré el movimiento con ${targetContact.name}. Ahora ${status} ${formatCurrency(Math.abs(currentBalance), currency)}${currency === 'USD' ? ' y también tiene saldo en ARS' : ''}.`;
         }
 
-        // Card update
+        // Card update logic - ONLY if a card is explicit OR if it's a general expense with no contact
+        const isDebtRelated = lower.includes('debo') || lower.includes('deuda') || lower.includes('prestó') || lower.includes('prestamos');
+        
         if (targetCard) {
             if (!targetCard.balances) targetCard.balances = { ARS: 0, USD: 0 };
             targetCard.balances[currency] += (type === 'income' ? amount : -amount);
             const isFuzzy = cardMatch && !cardMatch.exact;
             reply += ` (En ${targetCard.name})${isFuzzy ? ` *(Detecté "${cardMatch.segment}")*` : ''}`;
-        } else if (type === 'expense') {
-            // Default deduction from first available "Efectivo" or any card if no card specified
-            // to ensure Net Worth stays consistent
-            const efectivo = AppState.cards.find(c => c.name.includes('EFECTIVO')) || AppState.cards[0];
+        } else if (type === 'expense' && !targetContact && !isDebtRelated) {
+            // Default deduction from cash only for general expenses
+            const efectivo = AppState.cards.find(c => c.name.toLowerCase().includes('efectivo')) || AppState.cards[0];
             if (efectivo) {
                 if (!efectivo.balances) efectivo.balances = { ARS: 0, USD: 0 };
                 efectivo.balances[currency] -= amount;
@@ -1791,7 +1813,8 @@ function processCommand(text) {
             category: category,
             date: 'Hoy',
             icon: icon,
-            cardId: targetCard ? targetCard.id : null
+            cardId: targetCard ? targetCard.id : null,
+            contactId: targetContact ? targetContact.id : null
         };
         
         AppState.movements.unshift(newMovement);
