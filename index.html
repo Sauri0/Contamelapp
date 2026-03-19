@@ -39,30 +39,30 @@
 
         <!-- Bottom Navigation Bar -->
         <nav class="fixed bottom-0 left-0 right-0 max-w-md mx-auto nav-glass px-6 pb-6 pt-3 flex justify-between items-center z-[100]">
-            <a class="nav-item flex flex-col items-center justify-center w-12 h-12 text-primary" href="#" data-view="dashboard">
-                <span class="material-symbols-outlined text-2xl" id="nav-icon-dashboard" style="font-variation-settings: 'FILL' 1">home</span>
-                <span class="text-[10px] font-bold mt-0.5">Inicio</span>
+            <a href="#" class="nav-item flex flex-col items-center justify-center gap-1 text-primary hover:scale-110 active:scale-90 transition-all duration-200" data-view="dashboard">
+                <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">home</span>
+                <span class="text-[10px] font-bold uppercase tracking-widest leading-none">Inicio</span>
             </a>
-            <a class="nav-item flex flex-col items-center justify-center w-12 h-12 text-slate-400" href="#" data-view="vault">
-                <span class="material-symbols-outlined text-2xl" id="nav-icon-vault">account_balance_wallet</span>
-                <span class="text-[10px] font-medium mt-0.5">Bóveda</span>
+            <a href="#" class="nav-item flex flex-col items-center justify-center gap-1 text-slate-400 hover:scale-110 active:scale-90 transition-all duration-200" data-view="vault">
+                <span class="material-symbols-outlined">account_balance_wallet</span>
+                <span class="text-[10px] font-bold uppercase tracking-widest leading-none">Bóveda</span>
             </a>
             
             <!-- Central FAB: NLU Chat Trigger -->
             <div class="relative -top-8">
-                <button id="chat-trigger" class="size-14 bg-gradient-to-br from-primary to-emerald-600 text-background-dark rounded-2xl fab-glow flex items-center justify-center border-[6px] border-[#0A1229] active:scale-90 transition-all shadow-2xl">
-                    <span class="material-symbols-outlined text-3xl font-black">bolt</span>
-                </button>
+                <div class="absolute -top-10 left-1/2 -translate-x-1/2 size-20 bg-primary rounded-full flex items-center justify-center border-8 border-background-dark shadow-2xl hover:scale-110 active:scale-95 transition-transform duration-200 cursor-pointer" id="chat-trigger" data-view="chat">
+                    <span class="material-symbols-outlined text-background-dark text-4xl font-black">smart_toy</span>
+                </div>
                 <div class="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-primary/20 h-1 w-4 rounded-full blur-[2px]"></div>
             </div>
-
-            <a class="nav-item flex flex-col items-center justify-center w-12 h-12 text-slate-400" href="#" data-view="social">
-                <span class="material-symbols-outlined text-2xl" id="nav-icon-social">group</span>
-                <span class="text-[10px] font-medium mt-0.5">Social</span>
+            
+            <a href="#" class="nav-item flex flex-col items-center justify-center gap-1 text-slate-400 hover:scale-110 active:scale-90 transition-all duration-200" data-view="social">
+                <span class="material-symbols-outlined">group</span>
+                <span class="text-[10px] font-bold uppercase tracking-widest leading-none">Social</span>
             </a>
-            <a class="nav-item flex flex-col items-center justify-center w-12 h-12 text-slate-400" href="#" data-view="settings">
-                <span class="material-symbols-outlined text-2xl" id="nav-icon-settings">settings</span>
-                <span class="text-[10px] font-medium mt-0.5">Ajustes</span>
+            <a href="#" class="nav-item flex flex-col items-center justify-center gap-1 text-slate-400 hover:scale-110 active:scale-90 transition-all duration-200" data-view="plan">
+                <span class="material-symbols-outlined">calendar_month</span>
+                <span class="text-[10px] font-bold uppercase tracking-widest leading-none">Plan</span>
             </a>
         </nav>
 

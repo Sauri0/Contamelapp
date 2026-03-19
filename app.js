@@ -552,8 +552,8 @@ const ViewTemplates = {
                 <div class="absolute inset-0 bg-primary/5 blur-3xl rounded-full"></div>
                 <p class="text-[10px] font-black text-primary uppercase tracking-[0.4em] mb-4 opacity-80 italic relative z-10">Balance Neto Total</p>
                 <div class="flex flex-col items-center gap-2 relative z-10">
-                    <p class="text-5xl font-black text-white italic tracking-tighter leading-none">$ ${netARS.toLocaleString()}</p>
-                    <p class="text-2xl font-bold text-emerald-400 italic tracking-tight opacity-90">u$s ${netUSD.toLocaleString()}</p>
+                    <p class="text-4xl font-black text-white italic tracking-tighter leading-none">$ ${netARS.toLocaleString()}</p>
+                    <p class="text-4xl font-bold text-emerald-400 italic tracking-tight opacity-90">u$s ${netUSD.toLocaleString()}</p>
                 </div>
             </div>
 
@@ -1353,19 +1353,19 @@ function attachNavListeners() {
         if (scroller) scroller.scrollTop = scroller.scrollHeight;
     };
 
-    const closeChat = () => {
-        panel.classList.add('translate-y-full');
-        setTimeout(() => {
-            modal.classList.add('hidden');
-            // Clear chat cache to avoid unnecessary data
-            AppState.chatHistory = [
-                { role: 'ai', text: '¡Hola! Soy tu asistente de Contamelapp. ¿Cómo puedo ayudarte hoy?' }
-            ];
-        }, 300);
-    };
-
     backdrop.onclick = closeChat;
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeChat(); });
+}
+
+function closeChat() {
+    const modal = document.getElementById('chat-modal');
+    const panel = document.getElementById('chat-panel');
+    if (!panel) return;
+    
+    panel.classList.add('translate-y-full');
+    setTimeout(() => {
+        if (modal) modal.classList.add('hidden');
+    }, 300);
 }
 
 function attachChatListeners() {
@@ -1388,10 +1388,7 @@ function attachChatListeners() {
 
     if (btn) btn.onclick = handleSend;
     if (input) input.onkeydown = (e) => { if (e.key === 'Enter') handleSend(); };
-    if (close) close.onclick = () => {
-        document.getElementById('chat-panel').classList.add('translate-y-full');
-        setTimeout(() => document.getElementById('chat-modal').classList.add('hidden'), 300);
-    };
+    if (close) close.onclick = closeChat;
 
     document.querySelectorAll('.chat-chip').forEach(chip => {
         chip.onclick = () => {
@@ -1979,6 +1976,7 @@ function renderAnalyticsCharts() {
     
     for (let i = 5; i >= 0; i--) {
         const d = new Date();
+        d.setDate(1);
         d.setMonth(d.getMonth() - i);
         const monthStr = d.toLocaleDateString('es-AR', { month: 'short' }).charAt(0).toUpperCase() + d.toLocaleDateString('es-AR', { month: 'short' }).slice(1);
         labels.push(monthStr);
