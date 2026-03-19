@@ -7,7 +7,7 @@ let AppState = {
     user: { name: '', email: '', registered: false },
     auth: { username: '', password: '', isLoggedIn: false },
     rates: { ARS: 1, USD_BUY: 1415, USD_SELL: 1435, USD_AVG: 1425 },
-    preferences: { displayCurrency: 'MIXED' }, // MIXED, ARS, USD
+    preferences: { displayCurrency: 'MIXED', analyticsCurrency: 'ARS' }, // MIXED, ARS, USD
     currentView: 'dashboard',
     movements: [],
     cards: [],
@@ -50,6 +50,7 @@ function loadState() {
         if (!AppState.installments) AppState.installments = [];
         if (!AppState.lastInstallmentSync) AppState.lastInstallmentSync = '';
         if (!AppState.pendingAction) AppState.pendingAction = null;
+        if (!AppState.preferences.analyticsCurrency) AppState.preferences.analyticsCurrency = 'ARS';
         
         // Migrate contacts to new balances object
         AppState.contacts.forEach(c => {
@@ -137,7 +138,33 @@ function checkBudget(category, amount, currency) {
     // ... code ...
 }
 
-// --- Recurring Movements Engine ---
+function calculateGlobalBalance() {
+    const cardNet = AppState.cards.reduce((acc, c) => {
+        acc.ARS += (c.balances?.ARS || 0);
+        acc.USD += (c.balances?.USD || 0);
+        return acc;
+    }, { ARS: 0, USD: 0 });
+
+    const contactNet = AppState.contacts.reduce((acc, c) => {
+        acc.ARS += (c.balances?.ARS || 0);
+        acc.USD += (c.balances?.USD || 0);
+        return acc;
+    }, { ARS: 0, USD: 0 });
+
+    const floatingNet = AppState.movements.reduce((acc, m) => {
+        if (!m.cardId && !m.contactId) {
+            const val = m.type === 'income' ? m.amount : -m.amount;
+            if (m.currency === 'USD') acc.USD += val; else acc.ARS += val;
+        }
+        return acc;
+    }, { ARS: 0, USD: 0 });
+
+    return {
+        ARS: cardNet.ARS + contactNet.ARS + floatingNet.ARS,
+        USD: cardNet.USD + contactNet.USD + floatingNet.USD
+    };
+}
+
 function processRecurring() {
     const now = new Date();
     const currentMonth = `${now.getFullYear()}-${now.getMonth() + 1}`;
@@ -336,10 +363,33 @@ function processInstallments() {
     if (AppState.lastInstallmentSync === currentMonth) return;
 
     AppState.installments.forEach(ins => {
-        if (ins.remaining > 0) {
+        if (ins.remaining > 1) { // 1 because the first one was already processed
             ins.remaining--;
-            // Optional: Create a movement automatically?
-            // User didn't ask for auto-movement, just displaying remaining.
+            
+            // Create a movement for the current month's installment
+            const installmentNumber = ins.count - ins.remaining;
+            const newMovement = {
+                id: Date.now() + Math.random(),
+                text: `${ins.name} (Cuota ${installmentNumber}/${ins.count})`,
+                amount: ins.amount,
+                currency: ins.currency,
+                type: 'expense',
+                category: 'Cuotas',
+                date: now.toISOString(),
+                icon: 'calendar_month',
+                cardId: ins.cardId,
+                isInstallment: true
+            };
+            AppState.movements.unshift(newMovement);
+
+            // Deduct from card balance if assigned
+            if (ins.cardId) {
+                const card = AppState.cards.find(c => c.id == ins.cardId);
+                if (card) {
+                    if (!card.balances) card.balances = { ARS: 0, USD: 0 };
+                    card.balances[ins.currency] -= ins.amount;
+                }
+            }
         }
     });
 
@@ -504,21 +554,30 @@ const ViewTemplates = {
             return mDate.getMonth() === now.getMonth() && mDate.getFullYear() === now.getFullYear();
         });
 
-        const totalExpense = thisMonthMovements.filter(m => m.type === 'expense').reduce((acc, m) => acc + (m.currency === 'ARS' ? m.amount : m.amount * AppState.rates.USD_AVG), 0);
-        const totalIncome = thisMonthMovements.filter(m => m.type === 'income').reduce((acc, m) => acc + (m.currency === 'ARS' ? m.amount : m.amount * AppState.rates.USD_AVG), 0);
+        const activeCur = AppState.preferences.analyticsCurrency || 'ARS';
         
-        // Category Breakdown
+        // Calculation logic for current month totals
+        const getDisplayAmount = (m) => {
+            if (activeCur === 'MIXED') return m.currency === 'ARS' ? m.amount : m.amount * AppState.rates.USD_AVG;
+            if (activeCur === 'ARS') return m.currency === 'ARS' ? m.amount : m.amount * AppState.rates.USD_AVG;
+            // USD view: convert ARS movements to USD if in USD view
+            return m.currency === 'USD' ? m.amount : m.amount / AppState.rates.USD_AVG;
+        };
+
+        const totalExpense = thisMonthMovements.filter(m => m.type === 'expense').reduce((acc, m) => acc + getDisplayAmount(m), 0);
+        const totalIncome = thisMonthMovements.filter(m => m.type === 'income').reduce((acc, m) => acc + getDisplayAmount(m), 0);
+        
+        // Category Breakdown (Always ARS for consistent progress bars unless specified? No, use activeCur)
         const cats = {};
         thisMonthMovements.filter(m => m.type === 'expense').forEach(m => {
-            const amount = m.currency === 'ARS' ? m.amount : m.amount * AppState.rates.USD_AVG;
-            cats[m.category] = (cats[m.category] || 0) + amount;
+            cats[m.category] = (cats[m.category] || 0) + getDisplayAmount(m);
         });
         const sortedCats = Object.entries(cats).sort((a,b) => b[1] - a[1]);
         
         // Top 3 Expenses
         const topExpenses = AppState.movements
             .filter(m => m.type === 'expense')
-            .sort((a,b) => (b.currency === 'ARS' ? b.amount : b.amount * AppState.rates.USD_AVG) - (a.currency === 'ARS' ? a.amount : a.amount * AppState.rates.USD_AVG))
+            .sort((a,b) => getDisplayAmount(b) - getDisplayAmount(a))
             .slice(0, 3);
 
         const savingsRatio = totalIncome > 0 ? Math.max(0, Math.round(((totalIncome - totalExpense) / totalIncome) * 100)) : 0;
@@ -533,18 +592,10 @@ const ViewTemplates = {
             }
         }
 
-        // Net Worth (Include contacts for accurate Debt/Credit accounting)
-        const contactNet = AppState.contacts.reduce((acc, c) => {
-            acc.ARS += (c.balances?.ARS || 0);
-            acc.USD += (c.balances?.USD || 0);
-            return acc;
-        }, { ARS: 0, USD: 0 });
+        const globalBalance = calculateGlobalBalance();
 
-        const netARS = AppState.cards.reduce((acc, c) => acc + (c.balances?.ARS || 0), 0) + contactNet.ARS;
-        const netUSD = AppState.cards.reduce((acc, c) => acc + (c.balances?.USD || 0), 0) + contactNet.USD;
-        
         return `
-        <div class="px-6 py-8 view-transition font-display relative bg-gradient-to-b from-navy-dark to-background-dark">
+        <div class="px-6 py-8 view-transition font-display relative bg-gradient-to-b from-navy-dark to-background-dark min-h-screen">
             <button onclick="renderView('dashboard')" class="absolute top-8 right-6 size-10 rounded-full glass flex items-center justify-center text-slate-400 hover:text-white transition-all hover:scale-110 active:scale-90 z-20">
                 <span class="material-symbols-outlined">close</span>
             </button>
@@ -558,19 +609,29 @@ const ViewTemplates = {
                 <div class="absolute inset-0 bg-primary/5 blur-3xl rounded-full"></div>
                 <p class="text-[10px] font-black text-primary uppercase tracking-[0.4em] mb-4 opacity-80 italic relative z-10">Balance Neto Total</p>
                 <div class="flex flex-col items-center gap-2 relative z-10 w-full overflow-hidden">
-                    <p class="text-4xl font-black text-white italic tracking-tighter leading-none break-all">$ ${netARS.toLocaleString()}</p>
-                    <p class="text-4xl font-bold text-emerald-400 italic tracking-tight opacity-90 break-all">u$s ${netUSD.toLocaleString()}</p>
+                    <p class="text-4xl font-black text-white italic tracking-tighter leading-none break-all">$ ${globalBalance.ARS.toLocaleString()}</p>
+                    <p class="text-4xl font-bold text-emerald-400 italic tracking-tight opacity-90 break-all">u$s ${globalBalance.USD.toLocaleString()}</p>
                 </div>
             </div>
 
             <div class="grid grid-cols-2 gap-4 mb-8">
-                <div class="glass p-5 rounded-3xl border border-white/10 bg-gradient-to-br from-rose-500/5 to-transparent">
-                    <p class="text-[10px] font-bold text-rose-400 uppercase tracking-widest mb-1">Gastos Mes</p>
-                    <p class="text-xl font-black text-rose-500 italic">$ ${Math.round(totalExpense).toLocaleString()}</p>
+                <div id="toggle-exp-cur" class="glass p-5 rounded-3xl border border-white/10 bg-gradient-to-br from-rose-500/5 to-transparent cursor-pointer active:scale-95 transition-all">
+                    <div class="flex justify-between items-center mb-1">
+                        <p class="text-[10px] font-bold text-rose-400 uppercase tracking-widest">Gastos Mes</p>
+                        <span class="material-symbols-outlined text-[10px] text-rose-400 opacity-40">sync</span>
+                    </div>
+                    <p class="text-xl font-black text-rose-500 italic">
+                        ${activeCur === 'USD' ? 'u$s ' : '$ '}${Math.round(totalExpense).toLocaleString()}
+                    </p>
                 </div>
-                <div class="glass p-5 rounded-3xl border border-white/10 bg-gradient-to-br from-emerald-500/5 to-transparent">
-                    <p class="text-[10px] font-bold text-emerald-400 uppercase tracking-widest mb-1">Ingresos Mes</p>
-                    <p class="text-xl font-black text-emerald-500 italic">$ ${Math.round(totalIncome).toLocaleString()}</p>
+                <div id="toggle-inc-cur" class="glass p-5 rounded-3xl border border-white/10 bg-gradient-to-br from-emerald-500/5 to-transparent cursor-pointer active:scale-95 transition-all">
+                    <div class="flex justify-between items-center mb-1">
+                        <p class="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Ingresos Mes</p>
+                        <span class="material-symbols-outlined text-[10px] text-emerald-400 opacity-40">sync</span>
+                    </div>
+                    <p class="text-xl font-black text-emerald-500 italic">
+                        ${activeCur === 'USD' ? 'u$s ' : '$ '}${Math.round(totalIncome).toLocaleString()}
+                    </p>
                 </div>
             </div>
 
@@ -634,20 +695,20 @@ const ViewTemplates = {
                 <!-- Top Expenses -->
                 ${topExpenses.length > 0 ? `
                 <div class="space-y-4">
-                    <h3 class="text-xs font-black uppercase tracking-widest text-slate-500 px-2">Mayores Gastos</h3>
-                    <div class="space-y-2">
+                    <h3 class="text-xs font-black uppercase tracking-widest text-slate-400 px-1">Mayores Gastos</h3>
+                    <div class="space-y-3">
                         ${topExpenses.map(m => `
-                            <div class="glass p-4 rounded-3xl border border-white/5 flex items-center justify-between">
+                            <div class="glass-card p-4 rounded-3xl border border-white/5 flex justify-between items-center transition-all hover:bg-white/5">
                                 <div class="flex items-center gap-4">
-                                    <div class="size-10 rounded-2xl bg-white/5 flex items-center justify-center">
-                                        <span class="material-symbols-outlined text-slate-400 text-lg">${m.icon || 'shopping_cart'}</span>
+                                    <div class="size-10 rounded-full bg-rose-500/10 flex items-center justify-center">
+                                        <span class="material-symbols-outlined text-rose-500 text-lg">${m.icon}</span>
                                     </div>
                                     <div>
-                                        <p class="text-xs font-bold text-slate-100">${m.text}</p>
-                                        <p class="text-[9px] font-bold text-slate-500 uppercase tracking-widest">${m.category}</p>
+                                        <p class="text-sm font-bold text-slate-100">${m.text}</p>
+                                        <p class="text-[9px] text-slate-500 uppercase font-black tracking-widest">${m.category}</p>
                                     </div>
                                 </div>
-                                <p class="text-sm font-black text-slate-100 italic">${formatCurrency(m.amount, m.currency)}</p>
+                                <p class="font-black text-slate-100 italic">${formatCurrency(m.amount, m.currency)}</p>
                             </div>
                         `).join('')}
                     </div>
@@ -706,25 +767,14 @@ const ViewTemplates = {
     `,
 
     dashboard: () => {
-        const calculateTotals = () => {
-            let ars = 0, usd = 0;
-            AppState.movements.forEach(m => {
-                const val = m.type === 'income' ? m.amount : -m.amount;
-                if (m.currency === 'USD') usd += val; else ars += val;
-            });
-            // Subtract current month installments from net worth
-            AppState.installments.forEach(ins => {
-                if (ins.remaining > 0) {
-                    if (ins.currency === 'USD') usd -= ins.amount;
-                    else ars -= ins.amount;
-                }
-            });
-            return { ars, usd };
+        const convert = (val, from, to) => {
+            if (from === to) return val;
+            return from === 'ARS' ? val / AppState.rates.USD_AVG : val * AppState.rates.USD_AVG;
         };
 
-        const totals = calculateTotals();
-        const totalAsARS = totals.ars + convert(totals.usd, 'USD', 'ARS');
-        const totalAsUSD = totals.usd + convert(totals.ars, 'ARS', 'USD');
+        const totals = calculateGlobalBalance();
+        const totalAsARS = totals.ARS + convert(totals.USD, 'USD', 'ARS');
+        const totalAsUSD = totals.USD + convert(totals.ARS, 'ARS', 'USD');
         
         let primaryLabel = "Patrimonio Neto (Mixto)";
         let primaryValue = "";
@@ -739,12 +789,12 @@ const ViewTemplates = {
             primaryValue = `u$s ${totalAsUSD.toLocaleString()}`;
             secondaryLabel = `$${totalAsARS.toLocaleString()} aprox.`;
         } else {
-            primaryValue = `$${totals.ars.toLocaleString()} + u$s ${totals.usd.toLocaleString()}`;
+            primaryValue = `$${totals.ARS.toLocaleString()} + u$s ${totals.USD.toLocaleString()}`;
             secondaryLabel = `Total: $${totalAsARS.toLocaleString()} ARS`;
         }
 
-        const netARS = totals.ars;
-        const netUSD = totals.usd;
+        const netARS = totals.ARS;
+        const netUSD = totals.USD;
 
         return `
         <div class="px-6 pt-10 pb-12 relative overflow-hidden">
@@ -1577,13 +1627,28 @@ function processCommand(text) {
                     date: new Date().toISOString()
                 });
 
+                // Create the FIRST movement for the first installment
+                const newMovement = {
+                    id: Date.now() + 1,
+                    text: `${itemName} (Cuota 1/${count})`,
+                    amount: amountVal,
+                    currency: currency,
+                    type: 'expense',
+                    category: 'Cuotas',
+                    date: new Date().toISOString(),
+                    icon: 'calendar_month',
+                    cardId: targetCard ? targetCard.id : null,
+                    isInstallment: true
+                };
+                AppState.movements.unshift(newMovement);
+
                 // Deduct first installment from card if assigned
                 if (targetCard) {
                     if (!targetCard.balances) targetCard.balances = { ARS: 0, USD: 0 };
                     targetCard.balances[currency] -= amountVal;
                 }
                 const isFuzzy = cardMatch && !cardMatch.exact;
-                reply = `✅ ¡Perfecto! Registré ${count} cuotas de ${formatCurrency(amountVal, currency)} para "${itemName}"${targetCard ? ` en la tarjeta ${targetCard.name}` : ''}.${isFuzzy ? ` *(Entendí "${cardMatch.segment}" como ${targetCard.name})*` : ''}`;
+                reply = `✅ ¡Perfecto! Registré ${count} cuotas para "${itemName}"${targetCard ? ` en la tarjeta ${targetCard.name}` : ''}. He cargado la primera cuota de ${formatCurrency(amountVal, currency)} como gasto de este mes.`;
             }
 
             saveState();
@@ -1701,6 +1766,15 @@ function processCommand(text) {
             targetCard.balances[currency] += (type === 'income' ? amount : -amount);
             const isFuzzy = cardMatch && !cardMatch.exact;
             reply += ` (En ${targetCard.name})${isFuzzy ? ` *(Detecté "${cardMatch.segment}")*` : ''}`;
+        } else if (type === 'expense') {
+            // Default deduction from first available "Efectivo" or any card if no card specified
+            // to ensure Net Worth stays consistent
+            const efectivo = AppState.cards.find(c => c.name.includes('EFECTIVO')) || AppState.cards[0];
+            if (efectivo) {
+                if (!efectivo.balances) efectivo.balances = { ARS: 0, USD: 0 };
+                efectivo.balances[currency] -= amount;
+                reply += ` (Descontado de ${efectivo.name})`;
+            }
         }
 
         if (targetContact) {
@@ -1788,6 +1862,18 @@ function renderView(view) {
 
     if (view === 'analytics') {
         renderAnalyticsCharts();
+        const toggleExp = document.getElementById('toggle-exp-cur');
+        if (toggleExp) toggleExp.onclick = () => {
+            AppState.preferences.analyticsCurrency = AppState.preferences.analyticsCurrency === 'ARS' ? 'USD' : 'ARS';
+            saveState();
+            renderView('analytics');
+        };
+        const toggleInc = document.getElementById('toggle-inc-cur');
+        if (toggleInc) toggleInc.onclick = () => {
+            AppState.preferences.analyticsCurrency = AppState.preferences.analyticsCurrency === 'ARS' ? 'USD' : 'ARS';
+            saveState();
+            renderView('analytics');
+        };
     }
     if (view === 'dashboard') {
         renderChart();
