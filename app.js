@@ -75,6 +75,14 @@ function loadState() {
                 });
                 if (contact) m.contactId = contact.id;
             }
+            // Retroactive Cleaning: Fix old labels that include verbs or amounts
+            if (m.text && (m.text.toLowerCase().includes('pague') || m.text.toLowerCase().includes('gaste') || m.text.match(/\d/))) {
+                const dummyCard = m.cardId ? AppState.cards.find(c => c.id === m.cardId) : null;
+                const dummyContact = m.contactId ? AppState.contacts.find(c => c.id === m.contactId) : null;
+                // Note: getCleanDescription is defined in the script scope, but loadState runs before its declaration normally. 
+                // However, in this single-file app, all functions are hoisted. 
+                m.text = getCleanDescription(m.text, null, dummyContact, dummyCard, m.category);
+            }
         });
 
         // Chat Persistence Fix: Reset history on load (session-only chat)
@@ -152,9 +160,44 @@ function getBudgetStatus(category) {
         currency: budget.currency
     };
 }
-
 function checkBudget(category, amount, currency) {
-    // ... code ...
+    const status = getBudgetStatus(category);
+    if (!status) return "";
+    const incomingVal = convert(amount, currency, status.currency);
+    if (status.spent + incomingVal > status.limit) {
+        return `⚠️ ¡Ojo! Con esto superás el presupuesto de ${category} (${formatCurrency(status.limit, status.currency)}).`;
+    }
+    return "";
+}
+
+const incomeVerbs = [
+    'cobré', 'cobre', 'gano', 'recibí', 'recibi', 'ingreso', 'ingresó', 'entró', 'entro', 'gané', 'gane',
+    'sueldo', 'salario', 'aguinaldo', 'bono', 'honorarios', 'comisión', 'comision', 'ventas', 'venta',
+    'regalo', 'premio', 'encontré', 'encontre', 'intereses', 'dividendos', 'devolución', 'devolucion',
+    'me dio', 'me pagó', 'me pago', 'me mandó', 'me mando', 'me transfirió', 'me transfirio', 
+    'me depositó', 'me deposito', 'me devolvió', 'me devolvio', 'me prestó', 'me presto', 'recibo'
+];
+const expenseVerbs = [
+    'gasté', 'gaste', 'pagué', 'pague', 'compré', 'compre', 'saqué', 'saque', 'perdí', 'perdi', 'aboné', 'abone', 'liquidé', 'liquide', 'garpé', 'garpe',
+    'almorcé', 'almorce', 'cené', 'cene', 'desayuné', 'desayune', 'merendé', 'merende', 'comida', 'cena', 'almuerzo', 'desayuno', 'merienda',
+    'luz', 'gas', 'agua', 'internet', 'wifi', 'expensas', 'alquiler', 'cochera', 'seguro', 'patente', 'cuota', 'gym', 'gimnasio', 'club', 'monotributo', 'afip',
+    'nafta', 'combustible', 'taxi', 'uber', 'cabify', 'didi', 'colectivo', 'sube', 'tren', 'peaje', 'estacionamiento',
+    'spotify', 'netflix', 'disney', 'hbo', 'amazon', 'star+', 'icloud', 'apple',
+    'super', 'supermercado', 'chino', 'farmacia', 'kiosco', 'almacen', 'ferretería', 'ferreteria', 'delivery', 'pedidosya', 'rappi',
+    'debo', 'deuda', 'le presté', 'le preste', 'le di', 'le pagué', 'le pague', 'pago', 'compra', 'salida'
+];
+
+function getCleanDescription(rawText, cMatch, tContact, tCard, cat) {
+    const allVerbs = incomeVerbs.concat(expenseVerbs).sort((a, b) => b.length - a.length);
+    const amountRegex = /\d+[\d\.]*(?:,\d+)?/g;
+    let clean = rawText.replace(amountRegex, '')
+        .replace(new RegExp(`\\b(${allVerbs.join('|')})\\b`, 'gi'), '')
+        .replace(/u\$s|usd|ars|pesos|dolar|dólar|\$/gi, '')
+        .replace(/(una?|el|la|de|en|con|tarjeta|pago de|compra de)\s+/gi, ' ')
+        .replace(/\s+/g, ' ').trim();
+    if (cMatch) clean = clean.replace(new RegExp(cMatch.segment || cMatch.name, 'gi'), '').trim();
+    if (clean.length < 2) clean = tContact ? tContact.name : (tCard ? tCard.name : cat);
+    return clean.charAt(0).toUpperCase() + clean.slice(1);
 }
 
 function calculateGlobalBalance() {
@@ -1516,20 +1559,21 @@ function attachChatListeners() {
 }
 
 function processCommand(text) {
-    const lower = text.toLowerCase();
-    let reply = "No pude procesar eso. Prueba con: 'Gasté 500,50 en comida' o 'Cobré u$s 100'.";
+    const segments = text.split(/[,\n;]|\s+y\s+/i).filter(s => s.trim().length > 1);
+    let combinedReply = "";
+    let processedCount = 0;
 
-    // 1. Handle Pending Actions (Interactive Flow)
-    if (AppState.pendingAction) {
+    // A. Handle Pending Actions (Session Interactive Flow)
+    // Only applies to the first segment if there's a pending action
+    if (AppState.pendingAction && segments.length === 1) {
+        const lower = text.toLowerCase();
         const action = AppState.pendingAction;
         if (lower.includes('cancela') || lower.includes('olvidalo')) {
             AppState.pendingAction = null;
-            reply = "Vale, cancelé la operación anterior. ¿En qué más puedo ayudarte?";
+            combinedReply = "Vale, cancelé la operación anterior. ¿En qué más puedo ayudarte?";
         } else if (action.type === 'installment_card') {
-            // Try to find the card name in the text
             const cardMatch = fuzzyMatch(text, AppState.cards, 'name');
-            foundCard = cardMatch ? cardMatch.item : null;
-            
+            const foundCard = cardMatch ? cardMatch.item : null;
             if (foundCard) {
                 const data = action.data;
                 AppState.installments.push({
@@ -1542,45 +1586,65 @@ function processCommand(text) {
                     cardId: foundCard.id,
                     date: new Date().toISOString()
                 });
-                // Deduct first installment from card balance
                 if (!foundCard.balances) foundCard.balances = { ARS: 0, USD: 0 };
                 foundCard.balances[data.currency] -= data.amountVal;
-                
                 AppState.pendingAction = null;
                 saveState();
-                reply = `✅ ¡Listo! Asigné las cuotas de "${data.itemName}" a tu tarjeta ${foundCard.name}.`;
+                combinedReply = `✅ ¡Listo! Asigné las cuotas de "${data.itemName}" a tu tarjeta ${foundCard.name}.`;
                 renderView('dashboard');
             } else {
-                reply = `No encontré esa tarjeta. ¿A cuál la asigno? (O decime 'cancelar')`;
+                combinedReply = `No encontré esa tarjeta. ¿A cuál la asigno? (O decime 'cancelar')`;
             }
         }
         
-        if (AppState.pendingAction !== action) { // If action resolved/cancelled
-             setTimeout(() => {
-                AppState.chatHistory.push({ role: 'ai', text: reply });
-                const panel = document.getElementById('chat-panel');
-                if (panel && !panel.classList.contains('translate-y-full')) {
-                    panel.innerHTML = ViewTemplates.chat();
-                    attachChatListeners();
-                    const scroller = document.getElementById('chat-scroller');
-                    if (scroller) scroller.scrollTop = scroller.scrollHeight;
-                }
-            }, 800);
+        if (combinedReply) {
+            finishProcess(combinedReply);
             return;
         }
     }
 
-    // 0. Detect installments (Cuotas) - Heuristic Approach
-    if (text.toLowerCase().includes('cuota')) {
-        let count = 0, amountVal = 0, currency = 'ARS', itemName = '', targetCard = null;
+    // B. Bulk Process Segments
+    segments.forEach(seg => {
+        const result = handleSingleCommand(seg);
+        if (result) {
+            combinedReply += (combinedReply ? "\n" : "") + result;
+            processedCount++;
+        }
+    });
 
-        // A. Find Count: A number followed or preceded by "cuota/s"
+    if (processedCount === 0) {
+        combinedReply = "No pude entender esos movimientos. Probá con: 'Gasté 500 en café, le debo 200 a Ana y pagué 30usd luz'.";
+    }
+
+    finishProcess(combinedReply);
+
+    function finishProcess(reply) {
+        saveState();
+        setTimeout(() => {
+            AppState.chatHistory.push({ role: 'ai', text: reply });
+            renderView('dashboard');
+            const panel = document.getElementById('chat-panel');
+            if (panel && !panel.classList.contains('translate-y-full')) {
+                panel.innerHTML = ViewTemplates.chat();
+                attachChatListeners();
+                const scroller = document.getElementById('chat-scroller');
+                if (scroller) scroller.scrollTop = scroller.scrollHeight;
+            }
+        }, 800);
+    }
+}
+
+function handleSingleCommand(text) {
+    const lower = text.toLowerCase().trim();
+    
+    // 1. Detect installments (Cuotas)
+    if (lower.includes('cuota')) {
         const countMatch = text.match(/(\d+)\s*cuotas?/i) || text.match(/cuotas?\s*(?:de\s+)?(\d+)/i);
-        if (countMatch) count = parseInt(countMatch[1] || countMatch[2] || 0);
-
-        // B. Find Amount
         const allNumbers = text.match(/\d+[\d\.]*(?:,\d+)?/g);
-        let rawAmountStr = '';
+        let count = countMatch ? parseInt(countMatch[1] || countMatch[2] || 0) : 0;
+        let amountVal = 0;
+        let rawAmountStr = "";
+
         if (allNumbers) {
             allNumbers.forEach(n => {
                 const val = parseFloat(n.replace(/\./g, '').replace(',', '.'));
@@ -1589,255 +1653,145 @@ function processCommand(text) {
                     rawAmountStr = n;
                 }
             });
-            if (amountVal === 0 && allNumbers.length === 1 && parseInt(allNumbers[0]) !== count) {
-                amountVal = parseFloat(allNumbers[0].replace(/\./g, '').replace(',', '.'));
-                rawAmountStr = allNumbers[0];
-            }
         }
 
         if (count > 0 && amountVal > 0) {
-            // C. Find Currency
-            if (lower.includes('usd') || lower.includes('u$s') || lower.includes('dolar')) currency = 'USD';
-
-            // D. Find Card (FUZZY + Type filter)
-            let cardTypeFilter = null;
-            if (lower.includes('credito')) cardTypeFilter = 'credit';
-            if (lower.includes('debito')) cardTypeFilter = 'debit';
-
-            const filteredCards = cardTypeFilter ? AppState.cards.filter(c => c.cardType === cardTypeFilter) : AppState.cards;
-            const cardMatch = fuzzyMatch(text, filteredCards, 'name');
-            let explicitCard = cardMatch ? cardMatch.item : null;
-
-            // E. Extract Item Name
-            const cardSegment = cardMatch ? cardMatch.segment : '';
-            itemName = text
-                .replace(countMatch[0], '')
-                .replace(rawAmountStr, '') 
-                .replace(/(credito|debito|cuotas?|de\s+\d+|en\s+\d+)/gi, '') // Remove keywords
-                .replace(/(compr[eó]|pagu[eé]|pago|compra|una?|el|la|de|en|con|tarjeta|ars|usd|u\$s)\s+/gi, ' ')
-                .replace(/(?:ars|usd|u\$s)$/i, '');
+            let currency = (lower.includes('usd') || lower.includes('u$s') || lower.includes('dolar')) ? 'USD' : 'ARS';
+            const cardMatch = fuzzyMatch(text, AppState.cards, 'name');
+            let targetCard = cardMatch ? cardMatch.item : (AppState.cards.length > 0 ? AppState.cards[0] : null);
             
-            if (cardSegment) {
-                itemName = itemName.replace(cardSegment, '');
-            }
-
-            itemName = itemName.replace(/\s+/g, ' ').trim();
-            
+            // Extract item name
+            let itemName = text.replace(countMatch[0], '').replace(rawAmountStr, '')
+                .replace(/(credito|debito|cuotas?|de\s+\d+|en\s+\d+|tarjeta)/gi, '')
+                .replace(/(compr[eó]|pagu[eé]|pago|compra|una?|el|la|de|en|con|ars|usd|u\$s)\s+/gi, ' ')
+                .trim();
+            if (cardMatch) itemName = itemName.replace(cardMatch.segment, '').trim();
             if (itemName.length < 2) itemName = 'Compra en cuotas';
             itemName = itemName.charAt(0).toUpperCase() + itemName.slice(1);
 
-            if (!explicitCard && AppState.cards.length > 0) {
-                // ASK THE USER
-                AppState.pendingAction = {
-                    type: 'installment_card',
-                    data: { count, amountVal, currency, itemName }
-                };
-                reply = `Entendido, registré ${count} cuotas de ${formatCurrency(amountVal, currency)} para "${itemName}". \n\n¿A qué tarjeta lo asigno?`;
-            } else {
-                targetCard = explicitCard || (AppState.cards.length > 0 ? AppState.cards[0] : null);
-                AppState.installments.push({
-                    id: Date.now(),
-                    name: itemName,
-                    count: count,
-                    remaining: count,
-                    amount: amountVal,
-                    currency: currency,
-                    cardId: targetCard ? targetCard.id : null,
-                    date: new Date().toISOString()
-                });
-
-                // Create the FIRST movement for the first installment
-                const newMovement = {
-                    id: Date.now() + 1,
-                    text: `${itemName} (Cuota 1/${count})`,
-                    amount: amountVal,
-                    currency: currency,
-                    type: 'expense',
-                    category: 'Cuotas',
-                    date: new Date().toISOString(),
-                    icon: 'calendar_month',
-                    cardId: targetCard ? targetCard.id : null,
-                    isInstallment: true
-                };
-                AppState.movements.unshift(newMovement);
-
-                // Deduct first installment from card if assigned
-                if (targetCard) {
-                    if (!targetCard.balances) targetCard.balances = { ARS: 0, USD: 0 };
-                    targetCard.balances[currency] -= amountVal;
-                }
-                const isFuzzy = cardMatch && !cardMatch.exact;
-                reply = `✅ ¡Perfecto! Registré ${count} cuotas para "${itemName}"${targetCard ? ` en la tarjeta ${targetCard.name}` : ''}. He cargado la primera cuota de ${formatCurrency(amountVal, currency)} como gasto de este mes.`;
+            if (!cardMatch && AppState.cards.length > 1) {
+                // If it's a bulk message, we can't easily ask interactive questions for each 
+                // so we pick the first card and notify the user
+                targetCard = AppState.cards[0];
             }
 
-            saveState();
-            setTimeout(() => {
-                AppState.chatHistory.push({ role: 'ai', text: reply });
-                renderView('dashboard');
-                // Force chat refresh
-                const chatPanel = document.getElementById('chat-panel');
-                if (chatPanel && !chatPanel.classList.contains('translate-y-full')) {
-                    chatPanel.innerHTML = ViewTemplates.chat();
-                    attachChatListeners();
-                    const scroller = document.getElementById('chat-scroller');
-                    if (scroller) scroller.scrollTop = scroller.scrollHeight;
-                }
-            }, 800);
-            return;
+            AppState.installments.push({
+                id: Date.now() + Math.random(),
+                name: itemName,
+                count: count,
+                remaining: count,
+                amount: amountVal,
+                currency: currency,
+                cardId: targetCard ? targetCard.id : null,
+                date: new Date().toISOString()
+            });
+
+            const newMovement = {
+                id: Date.now() + Math.random(),
+                text: `${itemName} (1/${count})`,
+                amount: amountVal,
+                currency: currency,
+                type: 'expense',
+                category: 'Cuotas',
+                date: 'Hoy',
+                icon: 'calendar_month',
+                cardId: targetCard ? targetCard.id : null,
+                isInstallment: true
+            };
+            AppState.movements.unshift(newMovement);
+
+            if (targetCard) {
+                if (!targetCard.balances) targetCard.balances = { ARS: 0, USD: 0 };
+                targetCard.balances[currency] -= amountVal;
+                return `✅ Cuotas: ${count} de ${formatCurrency(amountVal, currency)} para "${itemName}" en ${targetCard.name}.`;
+            }
+            return `✅ Cuotas: ${count} de ${formatCurrency(amountVal, currency)} para "${itemName}".`;
         }
     }
 
-    // Recognize numbers with , as decimal and . as thousands
-    // Example: "300.000,50" -> we need to remove . and replace , with . for parseFloat
+
+    // 2. Regular Movements
     const rawMatch = text.match(/\d+[\d\.]*(?:,\d+)?/);
-    let amount = 0;
-    if (rawMatch) {
-        let clean = rawMatch[0].replace(/\./g, '').replace(',', '.');
-        amount = parseFloat(clean);
-    }
+    if (!rawMatch) return null;
+
+    const amount = parseFloat(rawMatch[0].replace(/\./g, '').replace(',', '.'));
+    if (isNaN(amount) || amount <= 0) return null;
+
+    let currency = 'ARS';
+    if (lower.match(/u\$s|usd|dolar|dólar/i)) currency = 'USD';
+    else if (lower.match(/ars|pesos|\$/i)) currency = 'ARS';
+
+    let type = 'expense';
+    const allVerbsWithTypes = [
+        ...incomeVerbs.map(v => ({ v, t: 'income' })),
+        ...expenseVerbs.map(v => ({ v, t: 'expense' }))
+    ].sort((a, b) => b.v.length - a.v.length);
+
+    const verbMatch = allVerbsWithTypes.find(item => lower.includes(item.v));
+    if (verbMatch) type = verbMatch.t;
     
-    reply = "No pude procesar eso. Prueba con: 'Gasté 500,50 en comida' o 'Cobré u$s 100'.";
-    
-    if (amount > 0) {
-        const lower = text.toLowerCase();
-        let type = 'expense';
-        let category = 'General';
-        let icon = 'shopping_cart';
-        let currency = 'ARS';
+    // Final overrides for "me pagó" etc.
+    if (lower.includes('me pagó') || lower.includes('me pago') || lower.includes('me dio') || lower.includes('me prestó')) type = 'income';
+    if (lower.includes('debo') || lower.includes('deuda')) type = 'expense';
 
-        if (lower.match(/\bu\$s\b|\busd\b|\bdolar\b|\bdólar\b/i) || text.includes('u$s')) {
-            currency = 'USD';
-        } else if (lower.match(/\bars\b|\bpesos\b|\b\$\b/i)) {
-            currency = 'ARS';
-        }
+    let category = type === 'income' ? 'Ingreso' : 'Varios';
+    let icon = type === 'income' ? 'payments' : 'shopping_cart';
 
-        const incomeVerbs = ['cobré', 'gano', 'recibí', 'ingreso', 'sueldo', 'pago de', 'depósito', 'regalo', 'premio', 'encontré', 'ventas', 'comisión', 'me dio', 'me pagó', 'me prestó'];
-        const expenseVerbs = ['gasté', 'pagué', 'compré', 'saqué', 'perdí', 'fui a', 'almuerzo', 'cena', 'uber', 'nafta', 'peaje', 'supermercado', 'farmacia', 'delivery', 'le di', 'le pagué', 'le presté'];
-        const debtVerbs = ['presté', 'debe', 'prestamo', 'le di', 'debo', 'deuda', 'le pasé'];
-        const goalVerbs = ['ahorré', 'guardé', 'metí', 'para mi', 'hacia mi meta', 'objetivo'];
+    if (lower.includes('ahorré') || lower.includes('meta')) { category = 'Ahorro'; icon = 'savings'; }
+    if (lower.includes('debo') || lower.includes('deuda')) { category = 'Deudas'; icon = 'group'; }
+
+    const cardMatch = fuzzyMatch(text, AppState.cards, 'name');
+    const contactMatch = fuzzyMatch(text, AppState.contacts, 'name');
+    const targetCard = cardMatch ? cardMatch.item : null;
+    const targetContact = contactMatch ? contactMatch.item : null;
+
+    // Contact Logic
+    if (targetContact) {
+        let delta = 0;
+        const reflectsDebt = lower.includes('debo') || lower.includes('deuda');
+        const isReceiving = lower.includes('me pagó') || lower.includes('me pago') || lower.includes('me dio') || lower.includes('me prestó') || lower.includes('recibí');
         
-        let targetCard = null;
-        let targetContact = null;
+        if (reflectsDebt) delta = -amount;
+        else if (isReceiving) delta = -amount; // If they pay me, their debt to me decreases or my debt to them decreases
+        else delta = amount; // "Le di", "Le presté", "Gasto para" -> they owe me more
 
-        let cardTypeFilter = null;
-        if (lower.includes('credito')) cardTypeFilter = 'credit';
-        if (lower.includes('debito')) cardTypeFilter = 'debit';
-
-        const filteredCards = cardTypeFilter ? AppState.cards.filter(c => c.cardType === cardTypeFilter) : AppState.cards;
-        const cardMatch = fuzzyMatch(text, filteredCards, 'name');
-        const contactMatch = fuzzyMatch(text, AppState.contacts, 'name');
-        
-        targetCard = cardMatch ? cardMatch.item : null;
-        targetContact = contactMatch ? contactMatch.item : null;
-
-        // Logic split: Meta vs Contact vs General
-        if (goalVerbs.some(v => lower.includes(v))) {
-            const foundGoal = AppState.goals.find(g => lower.includes(g.name.toLowerCase()));
-            if (foundGoal) {
-                foundGoal.current += convert(amount, currency, foundGoal.currency);
-                type = 'expense';
-                category = 'Ahorro';
-                icon = 'savings';
-                reply = `🚀 ¡Excelente ${AppState.user.name}! Sumaste ${formatCurrency(amount, currency)} a tu meta '${foundGoal.name}'.`;
-            }
-        } else if (incomeVerbs.some(v => lower.includes(v))) {
-            type = 'income';
-            icon = 'payments';
-            category = 'Ingreso';
-        } else {
-            type = 'expense';
-            icon = 'shopping_cart';
-            category = 'Varios';
-        }
-
-        // Special Debt logic if "debo" is explicit
-        if (lower.includes('debo') || lower.includes('deuda')) {
-            category = 'Deudas';
-            icon = 'group';
-        }
-
-        // Unified Contact Accounting
-        if (targetContact) {
-            let delta = 0;
-            const givingMoneyVerbs = ['le di', 'pagué', 'presté', 'le pagué', 'le presté', 'le pasé'];
-            const receivingMoneyVerbs = ['me dio', 'me pagó', 'me prestó', 'recibí', 'cobré'];
-
-            if (lower.includes('debo') || lower.includes('deuda')) {
-                delta = -amount;
-            } else if (givingMoneyVerbs.some(v => lower.includes(v)) || type === 'expense') {
-                delta = amount;
-            } else if (receivingMoneyVerbs.some(v => lower.includes(v)) || type === 'income') {
-                delta = -amount;
-            }
-
-            if (!targetContact.balances) targetContact.balances = { ARS: 0, USD: 0 };
-            targetContact.balances[currency] += delta;
-            
-            if (!targetContact.history) targetContact.history = [];
-            targetContact.history.unshift({ date: new Date().toISOString(), amount, type, currency, note: text });
-
-            const currentBalance = targetContact.balances[currency];
-            const status = currentBalance > 0 ? 'te debe' : (currentBalance < 0 ? 'le debes' : 'está al día con');
-            reply = `📝 ¡Entendido! Registré el movimiento con ${targetContact.name}. Ahora ${status} ${formatCurrency(Math.abs(currentBalance), currency)}${currency === 'USD' ? ' y también tiene saldo en ARS' : ''}.`;
-        }
-
-        // Card update logic - ONLY if a card is explicit OR if it's a general expense with no contact
-        const isDebtRelated = lower.includes('debo') || lower.includes('deuda') || lower.includes('prestó') || lower.includes('prestamos');
-        
-        if (targetCard) {
-            if (!targetCard.balances) targetCard.balances = { ARS: 0, USD: 0 };
-            targetCard.balances[currency] += (type === 'income' ? amount : -amount);
-            const isFuzzy = cardMatch && !cardMatch.exact;
-            reply += ` (En ${targetCard.name})${isFuzzy ? ` *(Detecté "${cardMatch.segment}")*` : ''}`;
-        } else if (type === 'expense' && !targetContact && !isDebtRelated) {
-            // Default deduction from cash only for general expenses
-            const efectivo = AppState.cards.find(c => c.name.toLowerCase().includes('efectivo')) || AppState.cards[0];
-            if (efectivo) {
-                if (!efectivo.balances) efectivo.balances = { ARS: 0, USD: 0 };
-                efectivo.balances[currency] -= amount;
-                reply += ` (Descontado de ${efectivo.name})`;
-            }
-        }
-
-        if (targetContact) {
-            const isFuzzy = contactMatch && !contactMatch.exact;
-            if (isFuzzy) reply += ` *(Identifiqué a "${contactMatch.segment}" como ${targetContact.name})*`;
-        }
-
-        const newMovement = {
-            id: Date.now(),
-            text: text.length > 25 ? text.substring(0, 25) + '...' : text,
-            amount: amount,
-            currency: currency,
-            type: type,
-            category: category,
-            date: 'Hoy',
-            icon: icon,
-            cardId: targetCard ? targetCard.id : null,
-            contactId: targetContact ? targetContact.id : null
-        };
-        
-        AppState.movements.unshift(newMovement);
-        
-        let budgetAdvice = "";
-        if (type === 'expense') {
-            budgetAdvice = "\n" + checkBudget(category, amount, currency);
-        }
-
-        reply = `✅ ¡Entendido ${AppState.user.name}! Registré tu ${type === 'expense' ? 'gasto' : 'ingreso'} de ${formatCurrency(amount, currency)}.${budgetAdvice}`;
-        saveState();
+        if (!targetContact.balances) targetContact.balances = { ARS: 0, USD: 0 };
+        targetContact.balances[currency] += delta;
+        if (!targetContact.history) targetContact.history = [];
+        targetContact.history.unshift({ date: new Date().toISOString(), amount, type, currency, note: text });
     }
 
-    setTimeout(() => {
-        AppState.chatHistory.push({ role: 'ai', text: reply });
-        const panel = document.getElementById('chat-panel');
-        if (panel && !panel.classList.contains('translate-y-full')) {
-            panel.innerHTML = ViewTemplates.chat();
-            attachChatListeners();
-            const scroller = document.getElementById('chat-scroller');
-            if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    // Card Update (only if distinct from contact debt, or if card is explicit)
+    const isDebtOnly = (lower.includes('debo') || lower.includes('deuda')) && !cardMatch;
+    if (targetCard) {
+        if (!targetCard.balances) targetCard.balances = { ARS: 0, USD: 0 };
+        targetCard.balances[currency] += (type === 'income' ? amount : -amount);
+    } else if (type === 'expense' && !targetContact && !isDebtOnly) {
+        const efectivo = AppState.cards.find(c => c.name.toLowerCase().includes('efectivo')) || AppState.cards[0];
+        if (efectivo) {
+            if (!efectivo.balances) efectivo.balances = { ARS: 0, USD: 0 };
+            efectivo.balances[currency] -= amount;
         }
-    }, 800);
+    }
+
+    // Clean Text Heuristic for the movement record
+    const cleanText = getCleanDescription(text, cardMatch, targetContact, targetCard, category);
+
+    // Register Movement
+    const newMovement = {
+        id: Date.now() + Math.random(),
+        text: cleanText,
+        amount, currency, type, category, icon,
+        date: 'Hoy',
+        cardId: targetCard ? targetCard.id : null,
+        contactId: targetContact ? targetContact.id : null
+    };
+    AppState.movements.unshift(newMovement);
+
+    let summary = `✅ ${type === 'income' ? 'Ingreso' : 'Gasto'}: ${formatCurrency(amount, currency)}`;
+    if (targetContact) summary += ` con ${targetContact.name}`;
+    if (targetCard) summary += ` (${targetCard.name})`;
+    return summary;
 }
 
 function showModal(title, content, actionId, actionText, onConfirm) {
