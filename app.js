@@ -17,9 +17,18 @@ let AppState = {
     recurring: [], // { name, amount, currency, category, day, type }
     lastRecurringSync: '', // YYYY-MM
     chatHistory: [
-        { role: 'ai', text: '¡Hola! Soy tu asistente de Contamelaap. ¿Cómo puedo ayudarte hoy?' }
+        { role: 'ai', text: '¡Hola! Soy tu asistente de Contamelapp. ¿Cómo puedo ayudarte hoy?' }
     ]
 };
+
+const CARD_GRADIENTS = [
+    { id: 'emerald', class: 'from-emerald-500 via-emerald-600 to-emerald-800', bg: '#10b981' },
+    { id: 'slate', class: 'from-slate-800 via-slate-900 to-black', bg: '#1e293b' },
+    { id: 'rose', class: 'from-rose-500 via-rose-600 to-rose-800', bg: '#f43f5e' },
+    { id: 'blue', class: 'from-blue-500 via-blue-600 to-blue-800', bg: '#3b82f6' },
+    { id: 'indigo', class: 'from-indigo-500 via-indigo-600 to-indigo-800', bg: '#6366f1' },
+    { id: 'amber', class: 'from-amber-400 via-amber-500 to-amber-700', bg: '#f59e0b' }
+];
 
 // --- Storage Logic ---
 const STORAGE_KEY = 'contamelapp_state_v3';
@@ -51,6 +60,11 @@ function loadState() {
                 delete c.currency;
             }
             if (!c.balances) c.balances = { ARS: 0, USD: 0 };
+        });
+
+        // Migrate cards to include type
+        AppState.cards.forEach(c => {
+            if (!c.cardType) c.cardType = 'credit'; // Default to credit for existing cards
         });
         return true;
     }
@@ -382,9 +396,27 @@ const ViewTemplates = {
                     <input id="f-card-balance-usd" type="number" placeholder="0" value="0" class="w-full p-4 rounded-2xl">
                 </div>
             </div>
-            <div class="space-y-1">
-                <label class="text-[10px] font-bold text-primary uppercase">Últimos 4 dígitos</label>
-                <input id="f-card-last4" type="text" placeholder="1234" maxlength="4" class="w-full p-4 rounded-2xl">
+            <div class="grid grid-cols-2 gap-4">
+                <div class="space-y-1">
+                    <label class="text-[10px] font-bold text-primary uppercase">Últimos 4 dígitos</label>
+                    <input id="f-card-last4" type="text" placeholder="1234" maxlength="4" class="w-full p-4 rounded-2xl">
+                </div>
+                <div class="space-y-1">
+                    <label class="text-[10px] font-bold text-primary uppercase">Tipo</label>
+                    <select id="f-card-type" class="w-full p-4 rounded-2xl">
+                        <option value="credit">Crédito</option>
+                        <option value="debit">Débito</option>
+                    </select>
+                </div>
+            </div>
+            <div class="space-y-2">
+                <label class="text-[10px] font-bold text-primary uppercase ml-1">Color de la Tarjeta</label>
+                <div class="flex justify-between items-center glass p-3 rounded-2xl">
+                    ${CARD_GRADIENTS.map(g => `
+                        <button type="button" onclick="selectCardColor('${g.id}')" data-color-id="${g.id}" class="color-swatch size-8 rounded-full border-2 border-transparent transition-all scale-90 hover:scale-100" style="background-color: ${g.bg}"></button>
+                    `).join('')}
+                    <input type="hidden" id="f-card-color" value="emerald">
+                </div>
             </div>
         </div>
     `,
@@ -460,11 +492,165 @@ const ViewTemplates = {
                 <label class="text-[10px] font-bold text-primary uppercase ml-1">Tarjeta Asociada</label>
                 <select id="f-rec-card" class="w-full p-4 rounded-2xl">
                     <option value="">Ninguna</option>
-                    ${AppState.cards.map(c => `<option value="${c.id}">${c.name} (•••• ${c.last4})</option>`).join('')}
+                    ${AppState.cards.map(c => `<option value="${c.id}">${c.name} (${c.cardType === 'credit' ? 'Crédito' : 'Débito'} •••• ${c.last4})</option>`).join('')}
                 </select>
             </div>
         </div>
     `,
+    analytics: () => {
+        const now = new Date();
+        const thisMonthMovements = AppState.movements.filter(m => {
+            const mDate = new Date(m.date === 'Hoy' ? new Date().toISOString() : m.date);
+            return mDate.getMonth() === now.getMonth() && mDate.getFullYear() === now.getFullYear();
+        });
+
+        const totalExpense = thisMonthMovements.filter(m => m.type === 'expense').reduce((acc, m) => acc + (m.currency === 'ARS' ? m.amount : m.amount * AppState.rates.USD_AVG), 0);
+        const totalIncome = thisMonthMovements.filter(m => m.type === 'income').reduce((acc, m) => acc + (m.currency === 'ARS' ? m.amount : m.amount * AppState.rates.USD_AVG), 0);
+        
+        // Category Breakdown
+        const cats = {};
+        thisMonthMovements.filter(m => m.type === 'expense').forEach(m => {
+            const amount = m.currency === 'ARS' ? m.amount : m.amount * AppState.rates.USD_AVG;
+            cats[m.category] = (cats[m.category] || 0) + amount;
+        });
+        const sortedCats = Object.entries(cats).sort((a,b) => b[1] - a[1]);
+        
+        // Top 3 Expenses
+        const topExpenses = AppState.movements
+            .filter(m => m.type === 'expense')
+            .sort((a,b) => (b.currency === 'ARS' ? b.amount : b.amount * AppState.rates.USD_AVG) - (a.currency === 'ARS' ? a.amount : a.amount * AppState.rates.USD_AVG))
+            .slice(0, 3);
+
+        const savingsRatio = totalIncome > 0 ? Math.max(0, Math.round(((totalIncome - totalExpense) / totalIncome) * 100)) : 0;
+        let savingsAdvice = "Carga tus primeros movimientos para ver el progreso de tus metas.";
+        if (AppState.movements.length > 0) {
+            if (savingsRatio > 0) {
+                savingsAdvice = `¡Vas por buen camino! Estás ahorrando un <span class="text-emerald-400">${savingsRatio}%</span> de lo que ingresas este mes.`;
+            } else if (totalIncome > 0) {
+                savingsAdvice = "Tus gastos están alcanzando tus ingresos. ¡Ojo con el presupuesto!";
+            } else {
+                savingsAdvice = "Registrá tus ingresos para calcular cuánto lográs ahorrar este mes.";
+            }
+        }
+
+        // Net Worth (Reuse Dashboard Logic for Consistency)
+        const netARS = AppState.cards.reduce((acc, c) => acc + (c.balances?.ARS || 0), 0);
+        const netUSD = AppState.cards.reduce((acc, c) => acc + (c.balances?.USD || 0), 0);
+        
+        return `
+        <div class="px-6 py-8 view-transition font-display relative bg-gradient-to-b from-navy-dark to-background-dark">
+            <button onclick="renderView('dashboard')" class="absolute top-8 right-6 size-10 rounded-full glass flex items-center justify-center text-slate-400 hover:text-white transition-all hover:scale-110 active:scale-90 z-20">
+                <span class="material-symbols-outlined">close</span>
+            </button>
+            <div class="mb-8">
+                <h2 class="text-3xl font-extrabold tracking-tighter leading-tight italic">Métricas<span class="text-primary">.</span></h2>
+                <p class="text-slate-400 text-sm font-medium uppercase tracking-[0.3em] text-[10px] opacity-60">Control de Rendimiento</p>
+            </div>
+
+            <!-- Global Balance Focus -->
+            <div class="glass p-8 rounded-[40px] border-white/5 mb-8 text-center relative overflow-hidden">
+                <div class="absolute inset-0 bg-primary/5 blur-3xl rounded-full"></div>
+                <p class="text-[10px] font-black text-primary uppercase tracking-[0.4em] mb-4 opacity-80 italic relative z-10">Balance Neto Total</p>
+                <div class="flex flex-col items-center gap-2 relative z-10">
+                    <p class="text-5xl font-black text-white italic tracking-tighter leading-none">$ ${netARS.toLocaleString()}</p>
+                    <p class="text-2xl font-bold text-emerald-400 italic tracking-tight opacity-90">u$s ${netUSD.toLocaleString()}</p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4 mb-8">
+                <div class="glass p-5 rounded-3xl border border-white/10 bg-gradient-to-br from-rose-500/5 to-transparent">
+                    <p class="text-[10px] font-bold text-rose-400 uppercase tracking-widest mb-1">Gastos Mes</p>
+                    <p class="text-xl font-black text-rose-500 italic">$ ${Math.round(totalExpense).toLocaleString()}</p>
+                </div>
+                <div class="glass p-5 rounded-3xl border border-white/10 bg-gradient-to-br from-emerald-500/5 to-transparent">
+                    <p class="text-[10px] font-bold text-emerald-400 uppercase tracking-widest mb-1">Ingresos Mes</p>
+                    <p class="text-xl font-black text-emerald-500 italic">$ ${Math.round(totalIncome).toLocaleString()}</p>
+                </div>
+            </div>
+
+            <div class="space-y-6 pb-32">
+                <!-- Trend Chart -->
+                <div class="glass p-6 rounded-[2.5rem] border border-white/10">
+                    <div class="flex justify-between items-center mb-6">
+                        <h3 class="text-xs font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
+                            <span class="material-symbols-outlined text-primary text-sm">trending_up</span>
+                            Evolución Mensual
+                        </h3>
+                        <span class="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Gasto por mes</span>
+                    </div>
+                    <div class="h-48 w-full relative">
+                        <canvas id="analytics-trend-chart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Category Breakdown -->
+                <div class="glass p-6 rounded-[2.5rem] border border-white/10">
+                    <h3 class="text-xs font-black uppercase tracking-widest text-slate-400 mb-6 flex items-center gap-2">
+                        <span class="material-symbols-outlined text-primary text-sm">pie_chart</span>
+                        Distribución de Gastos
+                    </h3>
+                    <div class="space-y-5">
+                        ${sortedCats.length === 0 ? `
+                            <p class="text-center py-4 text-xs font-bold text-slate-500 uppercase tracking-widest">No hay gastos este mes</p>
+                        ` : sortedCats.slice(0, 5).map(([cat, amount]) => {
+                            const percent = Math.round((amount / totalExpense) * 100);
+                            return `
+                                <div class="space-y-2">
+                                    <div class="flex justify-between items-end">
+                                        <span class="text-[10px] font-black text-slate-200 uppercase tracking-widest">${cat}</span>
+                                        <span class="text-[10px] font-black text-primary">${percent}%</span>
+                                    </div>
+                                    <div class="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                                        <div class="h-full bg-primary rounded-full transition-all duration-1000" style="width: ${percent}%"></div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+
+                <!-- Ratio de Ahorro -->
+                <div class="glass p-6 rounded-[2.5rem] border border-white/10 bg-gradient-to-br from-primary/10 to-transparent relative overflow-hidden">
+                    <div class="absolute top-0 right-0 p-4 opacity-10">
+                        <span class="material-symbols-outlined text-8xl text-primary">rocket_launch</span>
+                    </div>
+                    <div class="relative z-10">
+                        <div class="flex justify-between items-start mb-4">
+                            <div>
+                                <h3 class="text-xs font-black uppercase tracking-widest text-slate-400 mb-1">Ratio de Ahorro</h3>
+                                <p class="text-5xl font-black text-white italic">${AppState.movements.length === 0 ? '--' : savingsRatio}<span class="text-primary text-2xl NOT-italic">%</span></p>
+                            </div>
+                        </div>
+                        <p class="text-[10px] font-bold text-slate-400 leading-relaxed uppercase tracking-wider">${savingsAdvice}</p>
+                    </div>
+                </div>
+
+                <!-- Top Expenses -->
+                ${topExpenses.length > 0 ? `
+                <div class="space-y-4">
+                    <h3 class="text-xs font-black uppercase tracking-widest text-slate-500 px-2">Mayores Gastos</h3>
+                    <div class="space-y-2">
+                        ${topExpenses.map(m => `
+                            <div class="glass p-4 rounded-3xl border border-white/5 flex items-center justify-between">
+                                <div class="flex items-center gap-4">
+                                    <div class="size-10 rounded-2xl bg-white/5 flex items-center justify-center">
+                                        <span class="material-symbols-outlined text-slate-400 text-lg">${m.icon || 'shopping_cart'}</span>
+                                    </div>
+                                    <div>
+                                        <p class="text-xs font-bold text-slate-100">${m.text}</p>
+                                        <p class="text-[9px] font-bold text-slate-500 uppercase tracking-widest">${m.category}</p>
+                                    </div>
+                                </div>
+                                <p class="text-sm font-black text-slate-100 italic">${formatCurrency(m.amount, m.currency)}</p>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                ` : ''}
+            </div>
+        </div>
+        `;
+    },
     contactForm: () => `
         <div class="space-y-4">
             <div class="flex justify-center mb-4">
@@ -551,13 +737,36 @@ const ViewTemplates = {
             secondaryLabel = `Total: $${totalAsARS.toLocaleString()} ARS`;
         }
 
+        const netARS = totals.ars;
+        const netUSD = totals.usd;
+
         return `
-        <header class="flex items-center p-4 justify-between sticky top-0 z-50 bg-background-light/80 dark:bg-background-dark/80 backdrop-blur-md font-display">
-            <h2 class="text-slate-900 dark:text-slate-100 text-lg font-bold leading-tight tracking-tight flex-1 text-left">Contamelapp</h2>
-            <div class="flex w-10 items-center justify-end">
-                <button id="toggle-currency" class="flex items-center justify-center rounded-lg size-10 bg-primary/10 text-primary active:scale-90 transition-transform"><span class="material-symbols-outlined">currency_exchange</span></button>
+        <div class="px-6 pt-10 pb-12 relative overflow-hidden">
+            <div class="flex justify-between items-start mb-8 relative z-10">
+                <button id="settings-btn" class="size-12 rounded-full glass border border-white/10 flex items-center justify-center hover:bg-white/10 hover:scale-110 active:scale-90 transition-all duration-200 text-slate-300">
+                    <span class="material-symbols-outlined text-2xl font-light">settings</span>
+                </button>
+                <h1 class="text-lg font-black tracking-[0.2em] text-center pt-2">CONTAMEL<span class="text-primary">APP</span></h1>
+                <button id="analytics-btn" class="size-12 rounded-full glass border border-white/10 flex items-center justify-center hover:bg-white/10 hover:scale-110 active:scale-90 transition-all duration-200 text-slate-300">
+                    <span class="material-symbols-outlined text-2xl font-light">trending_up</span>
+                </button>
             </div>
-        </header>
+
+            <!-- Net Worth Area -->
+            <div id="net-worth-toggle" class="relative z-10 text-center cursor-pointer active:scale-95 transition-transform flex flex-col items-center">
+                <p class="text-[10px] font-black text-primary uppercase tracking-[0.3em] mb-4 opacity-80 italic">Patrimonio Neto</p>
+                <div class="flex flex-col items-center gap-2">
+                    ${AppState.preferences.displayCurrency === 'ARS' || AppState.preferences.displayCurrency === 'MIXED' ? 
+                        `<p class="text-4xl font-black text-white italic tracking-tighter leading-none">$ ${netARS.toLocaleString()}</p>` : ''}
+                    ${AppState.preferences.displayCurrency === 'USD' || AppState.preferences.displayCurrency === 'MIXED' ? 
+                        `<p class="text-4xl font-black text-emerald-400 italic tracking-tighter leading-none">u$s ${netUSD.toLocaleString()}</p>` : ''}
+                </div>
+                <div class="mt-6 flex items-center gap-2 bg-white/5 px-3 py-1.5 rounded-full border border-white/5">
+                    <span class="material-symbols-outlined text-xs text-slate-500">touch_app</span>
+                    <span class="text-[9px] font-bold text-slate-500 uppercase tracking-widest leading-none">Toca para cambiar moneda</span>
+                </div>
+            </div>
+        </div>
 
         <!-- Dólar Ticker -->
         <section class="px-4 py-2">
@@ -579,16 +788,6 @@ const ViewTemplates = {
             </div>
         </section>
 
-        <section class="px-6 py-6 text-center flex flex-col items-center view-transition font-display text-slate-100">
-            <p class="text-primary text-[10px] font-black uppercase tracking-widest mb-1 opacity-80">${primaryLabel}</p>
-            <h1 class="${primaryValue.length > 15 ? 'text-2xl' : 'text-4xl'} font-black leading-tight tracking-tighter mb-2">
-                ${primaryValue}
-            </h1>
-            <div class="flex items-center gap-2 bg-emerald-500/10 px-3 py-1 rounded-full">
-                <span class="material-symbols-outlined text-primary text-sm">trending_up</span>
-                <span class="text-primary text-[10px] font-bold uppercase">${secondaryLabel}</span>
-            </div>
-        </section>
 
         <!-- Budget Quick View -->
         ${AppState.budgets.length > 0 ? `
@@ -728,48 +927,70 @@ const ViewTemplates = {
     `;
     },
 
-    vault: () => `
+    vault: () => {
+        const renderCardList = (type, title) => {
+            const list = AppState.cards.filter(c => c.cardType === type);
+            if (list.length === 0) return '';
+            return `
+                <div class="px-6 mb-4">
+                    <h3 class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 mb-4">${title}</h3>
+                    <div class="flex flex-col gap-4">
+                        ${list.map(card => `
+                            <div class="w-full h-[180px] rounded-2xl p-6 flex flex-col justify-between card-shadow relative overflow-hidden bg-gradient-to-br ${card.gradient} border border-white/20">
+                                <div class="flex justify-between items-start">
+                                    <span class="material-symbols-outlined text-white/80 text-3xl">contactless</span>
+                                    <div class="bg-white/20 px-3 py-1 rounded-full backdrop-blur-md">
+                                        <p class="text-[10px] font-bold text-white uppercase italic tracking-tighter">${card.name}</p>
+                                    </div>
+                                </div>
+                                <div class="space-y-1">
+                                    <p class="text-white/70 text-[8px] font-bold uppercase tracking-wider">Saldos</p>
+                                    <div class="flex justify-between items-center">
+                                        <p class="text-white text-lg font-bold tracking-tight">$ ${card.balances?.ARS.toLocaleString() || 0}</p>
+                                        <p class="text-white/90 text-sm font-medium">u$s ${card.balances?.USD.toLocaleString() || 0}</p>
+                                    </div>
+                                </div>
+                                <div class="flex justify-between items-end">
+                                    <p class="text-white/90 font-mono tracking-widest text-sm">•••• ${card.last4}</p>
+                                    <div class="flex gap-2">
+                                        <button onclick="editCard(${card.id})" class="size-8 rounded-full bg-white/10 flex items-center justify-center hover:bg-white/20 transition-colors"><span class="material-symbols-outlined text-sm">edit</span></button>
+                                        <button onclick="removeCard(${card.id})" class="size-8 rounded-full bg-rose-500/20 flex items-center justify-center hover:bg-rose-500/40 transition-colors"><span class="material-symbols-outlined text-sm">delete</span></button>
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        };
+
+        return `
         <div class="px-6 py-8 view-transition font-display">
             <h2 class="text-3xl font-extrabold tracking-tighter leading-tight">Bóveda Digital</h2>
             <p class="text-slate-400 text-sm font-medium">Gestiona tus activos y tarjetas físicas</p>
         </div>
-        <div class="flex overflow-x-auto gap-5 px-6 pb-8 hide-scrollbar snap-x snap-mandatory">
-            ${AppState.cards.length === 0 ? `
-                <div class="min-w-[300px] h-[190px] rounded-2xl border-2 border-dashed border-primary/20 flex flex-col items-center justify-center text-slate-500 text-center px-8">
+        
+        ${AppState.cards.length === 0 ? `
+            <div class="px-6 mb-8">
+                <div class="w-full h-[190px] rounded-2xl border-2 border-dashed border-primary/20 flex flex-col items-center justify-center text-slate-500 text-center px-8">
                     <span class="material-symbols-outlined text-4xl mb-2">add_card</span>
                     <p class="text-xs font-bold uppercase tracking-widest">Sin Tarjetas</p>
                 </div>
-            ` : AppState.cards.map(card => `
-                <div class="min-w-[300px] h-[190px] rounded-2xl p-6 flex flex-col justify-between snap-center card-shadow relative overflow-hidden bg-gradient-to-br ${card.gradient} border border-white/20">
-                    <div class="flex justify-between items-start">
-                        <span class="material-symbols-outlined text-white/80 text-3xl">contactless</span>
-                        <div class="bg-white/20 px-3 py-1 rounded-full backdrop-blur-md">
-                            <p class="text-[10px] font-bold text-white uppercase italic tracking-tighter">${card.name}</p>
-                        </div>
-                    </div>
-                    <div class="space-y-1">
-                        <p class="text-white/70 text-[8px] font-bold uppercase tracking-wider">Saldos</p>
-                        <div class="flex justify-between items-center">
-                            <p class="text-white text-lg font-bold tracking-tight">$ ${card.balances?.ARS.toLocaleString() || 0}</p>
-                            <p class="text-white/90 text-sm font-medium">u$s ${card.balances?.USD.toLocaleString() || 0}</p>
-                        </div>
-                    </div>
-                    <div class="flex justify-between items-end">
-                        <p class="text-white/90 font-mono tracking-widest text-sm">•••• ${card.last4}</p>
-                        <div class="flex gap-2">
-                            <button onclick="editCard(${card.id})" class="size-8 rounded-full bg-white/10 flex items-center justify-center hover:bg-white/20 transition-colors"><span class="material-symbols-outlined text-sm">edit</span></button>
-                            <button onclick="removeCard(${card.id})" class="size-8 rounded-full bg-rose-500/20 flex items-center justify-center hover:bg-rose-500/40 transition-colors"><span class="material-symbols-outlined text-sm">delete</span></button>
-                        </div>
-                    </div>
-                </div>
-            `).join('')}
-        </div>
+            </div>
+        ` : `
+            <div class="pb-4">
+                ${renderCardList('credit', 'Tarjetas de Crédito')}
+                ${renderCardList('debit', 'Tarjetas de Débito')}
+            </div>
+        `}
+
         <section class="px-6 mt-4 pb-32">
             <button id="add-card-btn" class="w-full py-4 glass-card rounded-2xl border-dashed border-primary/40 text-primary font-bold flex items-center justify-center gap-2 hover:bg-primary/5 transition-all">
                 <span class="material-symbols-outlined">add</span> Agregar Nueva Tarjeta
             </button>
         </section>
-    `,
+    `;
+    },
 
     social: () => `
         <div class="px-6 py-8 view-transition font-display text-slate-100">
@@ -847,8 +1068,11 @@ const ViewTemplates = {
     `,
 
     settings: () => `
-        <header class="sticky top-0 z-50 glass-header px-6 py-4 flex items-center justify-between font-display">
+        <header class="sticky top-0 z-50 glass-header px-6 py-4 flex items-center justify-between font-display relative">
             <h1 class="text-xl font-bold tracking-tight text-slate-100">Configuración</h1>
+            <button onclick="renderView('dashboard')" class="size-10 rounded-full glass hover:bg-white/10 transition-all flex items-center justify-center text-slate-400">
+                <span class="material-symbols-outlined text-xl">close</span>
+            </button>
         </header>
         <main class="px-6 py-6 space-y-8 pb-32 max-w-md mx-auto font-display">
             <section class="flex flex-col items-center gap-4 py-8 glass rounded-[40px] border-white/5 relative overflow-hidden">
@@ -877,7 +1101,14 @@ const ViewTemplates = {
                     </div>
                 </div>
             </section>
+        </main>
+    `,
 
+    plan: () => `
+        <header class="sticky top-0 z-50 glass-header px-6 py-4 flex items-center justify-between font-display">
+            <h1 class="text-xl font-bold tracking-tight text-slate-100 uppercase">Planificación</h1>
+        </header>
+        <main class="px-6 py-6 space-y-8 pb-32 max-w-md mx-auto font-display">
             <section class="space-y-3">
                 <div class="flex justify-between items-center px-1">
                     <h3 class="text-xs font-bold uppercase tracking-widest text-primary">Gestión de Presupuestos</h3>
@@ -982,7 +1213,7 @@ const ViewTemplates = {
             <div class="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-background-dark via-background-dark/95 to-transparent pt-12 z-40 max-w-md mx-auto">
                 <div class="flex gap-2 overflow-x-auto no-scrollbar mb-4">
                     <button class="chat-chip whitespace-nowrap px-4 py-2 glass rounded-full text-[10px] font-bold text-slate-400 uppercase tracking-widest border border-white/5">Gasté 500 en café</button>
-                    <button class="chat-chip whitespace-nowrap px-4 py-2 glass rounded-full text-[10px] font-bold text-slate-400 uppercase tracking-widest border border-white/5">Cobré 100 u$s</button>
+                    <button class="chat-chip whitespace-nowrap px-4 py-2 glass rounded-full text-[10px] font-bold text-slate-400 uppercase tracking-widest border border-white/5">Cobré u$s 100</button>
                     <button class="chat-chip whitespace-nowrap px-4 py-2 glass rounded-full text-[10px] font-bold text-slate-400 uppercase tracking-widest border border-white/5">Le debo 300 a Gigli</button>
                 </div>
                 <div class="flex gap-2 glass p-1.5 rounded-3xl border border-white/10 shadow-2xl">
@@ -1124,7 +1355,13 @@ function attachNavListeners() {
 
     const closeChat = () => {
         panel.classList.add('translate-y-full');
-        setTimeout(() => modal.classList.add('hidden'), 300);
+        setTimeout(() => {
+            modal.classList.add('hidden');
+            // Clear chat cache to avoid unnecessary data
+            AppState.chatHistory = [
+                { role: 'ai', text: '¡Hola! Soy tu asistente de Contamelapp. ¿Cómo puedo ayudarte hoy?' }
+            ];
+        }, 300);
     };
 
     backdrop.onclick = closeChat;
@@ -1197,10 +1434,10 @@ function processCommand(text) {
                 
                 AppState.pendingAction = null;
                 saveState();
-                reply = `✅ ¡Listo! Asigné las cuotas de "${data.itemName}" a tu tarjeta **${foundCard.name}**.`;
+                reply = `✅ ¡Listo! Asigné las cuotas de "${data.itemName}" a tu tarjeta ${foundCard.name}.`;
                 renderView('dashboard');
             } else {
-                reply = `No encontré esa tarjeta. Las que tenés son: **${AppState.cards.map(c => c.name).join(', ')}**. \n\n¿A cuál la asigno? (O decime 'cancelar')`;
+                reply = `No encontré esa tarjeta. ¿A cuál la asigno? (O decime 'cancelar')`;
             }
         }
         
@@ -1248,8 +1485,13 @@ function processCommand(text) {
             // C. Find Currency
             if (lower.includes('usd') || lower.includes('u$s') || lower.includes('dolar')) currency = 'USD';
 
-            // D. Find Card (FUZZY)
-            const cardMatch = fuzzyMatch(text, AppState.cards, 'name');
+            // D. Find Card (FUZZY + Type filter)
+            let cardTypeFilter = null;
+            if (lower.includes('credito')) cardTypeFilter = 'credit';
+            if (lower.includes('debito')) cardTypeFilter = 'debit';
+
+            const filteredCards = cardTypeFilter ? AppState.cards.filter(c => c.cardType === cardTypeFilter) : AppState.cards;
+            const cardMatch = fuzzyMatch(text, filteredCards, 'name');
             let explicitCard = cardMatch ? cardMatch.item : null;
 
             // E. Extract Item Name
@@ -1257,6 +1499,7 @@ function processCommand(text) {
             itemName = text
                 .replace(countMatch[0], '')
                 .replace(rawAmountStr, '') 
+                .replace(/(credito|debito|cuotas?|de\s+\d+|en\s+\d+)/gi, '') // Remove keywords
                 .replace(/(compr[eó]|pagu[eé]|pago|compra|una?|el|la|de|en|con|tarjeta|ars|usd|u\$s)\s+/gi, ' ')
                 .replace(/(?:ars|usd|u\$s)$/i, '');
             
@@ -1275,7 +1518,7 @@ function processCommand(text) {
                     type: 'installment_card',
                     data: { count, amountVal, currency, itemName }
                 };
-                reply = `Entendido, registré **${count} cuotas de ${formatCurrency(amountVal, currency)}** para "${itemName}". \n\n¿A qué tarjeta lo asigno? Mis opciones son: **${AppState.cards.map(c => c.name).join(', ')}**.`;
+                reply = `Entendido, registré ${count} cuotas de ${formatCurrency(amountVal, currency)} para "${itemName}". \n\n¿A qué tarjeta lo asigno?`;
             } else {
                 targetCard = explicitCard || (AppState.cards.length > 0 ? AppState.cards[0] : null);
                 AppState.installments.push({
@@ -1295,7 +1538,7 @@ function processCommand(text) {
                     targetCard.balances[currency] -= amountVal;
                 }
                 const isFuzzy = cardMatch && !cardMatch.exact;
-                reply = `✅ ¡Perfecto! Registré **${count} cuotas de ${formatCurrency(amountVal, currency)}** para "${itemName}"${targetCard ? ` en la tarjeta ${targetCard.name}` : ''}.${isFuzzy ? ` *(Entendí "${cardMatch.segment}" como ${targetCard.name})*` : ''}`;
+                reply = `✅ ¡Perfecto! Registré ${count} cuotas de ${formatCurrency(amountVal, currency)} para "${itemName}"${targetCard ? ` en la tarjeta ${targetCard.name}` : ''}.${isFuzzy ? ` *(Entendí "${cardMatch.segment}" como ${targetCard.name})*` : ''}`;
             }
 
             saveState();
@@ -1345,7 +1588,12 @@ function processCommand(text) {
         let targetCard = null;
         let targetContact = null;
 
-        const cardMatch = fuzzyMatch(text, AppState.cards, 'name');
+        let cardTypeFilter = null;
+        if (lower.includes('credito')) cardTypeFilter = 'credit';
+        if (lower.includes('debito')) cardTypeFilter = 'debit';
+
+        const filteredCards = cardTypeFilter ? AppState.cards.filter(c => c.cardType === cardTypeFilter) : AppState.cards;
+        const cardMatch = fuzzyMatch(text, filteredCards, 'name');
         const contactMatch = fuzzyMatch(text, AppState.contacts, 'name');
         
         targetCard = cardMatch ? cardMatch.item : null;
@@ -1419,11 +1667,12 @@ function processCommand(text) {
             id: Date.now(),
             text: text.length > 25 ? text.substring(0, 25) + '...' : text,
             amount: amount,
-            currency: currency, // Add currency to new movement
+            currency: currency,
             type: type,
             category: category,
             date: 'Hoy',
-            icon: icon
+            icon: icon,
+            cardId: targetCard ? targetCard.id : null
         };
         
         AppState.movements.unshift(newMovement);
@@ -1492,16 +1741,72 @@ function renderView(view) {
     
     main.innerHTML = ViewTemplates[view]();
 
+    if (view === 'analytics') {
+        renderAnalyticsCharts();
+    }
     if (view === 'dashboard') {
         renderChart();
-        const toggleBtn = document.getElementById('toggle-currency');
-        if (toggleBtn) {
-            toggleBtn.onclick = () => {
-                const modes = ['MIXED', 'ARS', 'USD'];
-                const currentIndex = modes.indexOf(AppState.preferences.displayCurrency);
-                AppState.preferences.displayCurrency = modes[(currentIndex + 1) % modes.length];
-                saveState();
-                renderView('dashboard');
+        const settingsBtn = document.getElementById('settings-btn');
+        if (settingsBtn) {
+            settingsBtn.onclick = () => renderView('settings');
+        }
+        const analyticsBtn = document.getElementById('analytics-btn');
+        if (analyticsBtn) analyticsBtn.onclick = () => renderView('analytics');
+
+        const netWorthBtn = document.getElementById('net-worth-toggle');
+        if (netWorthBtn) netWorthBtn.onclick = toggleDisplayCurrency;
+    }
+    
+    if (view === 'plan') {
+        const addBudgetBtn = document.getElementById('add-budget-btn');
+        if (addBudgetBtn) {
+            addBudgetBtn.onclick = () => {
+                showModal("Nuevo Presupuesto", ViewTemplates.budgetForm(), "save-budget", "Establecer Límite", () => {
+                    const cat = document.getElementById('f-budget-cat').value;
+                    const limit = parseLocaleFloat(document.getElementById('f-budget-limit').value);
+                    const currency = document.getElementById('f-budget-currency').value;
+                    if (cat && !isNaN(limit)) {
+                        AppState.budgets.push({ category: cat, limit, currency });
+                        saveState();
+                        renderView('plan');
+                    }
+                });
+            };
+        }
+
+        const addGoalBtn = document.getElementById('add-goal-btn');
+        if (addGoalBtn) {
+            addGoalBtn.onclick = () => {
+                showModal("Nueva Meta de Ahorro", ViewTemplates.goalForm(), "save-goal", "Crear Meta", () => {
+                    const name = document.getElementById('f-goal-name').value;
+                    const target = parseLocaleFloat(document.getElementById('f-goal-target').value);
+                    const currency = document.getElementById('f-goal-currency').value;
+                    if (name && !isNaN(target)) {
+                        AppState.goals.push({ name, target, current: 0, currency });
+                        saveState();
+                        renderView('plan');
+                    }
+                });
+            };
+        }
+
+        const addRecurringBtn = document.getElementById('add-recurring-btn');
+        if (addRecurringBtn) {
+            addRecurringBtn.onclick = () => {
+                showModal("Nueva Suscripción", ViewTemplates.recurringForm(), "save-rec", "Guardar", () => {
+                    const name = document.getElementById('f-rec-name').value;
+                    const amount = parseLocaleFloat(document.getElementById('f-rec-amount').value);
+                    const day = parseInt(document.getElementById('f-rec-day').value);
+                    const currency = document.getElementById('f-rec-currency').value;
+                    const type = document.getElementById('f-rec-type').value;
+                    const cardId = document.getElementById('f-rec-card').value;
+                    
+                    if (name && !isNaN(amount) && day > 0 && day <= 31) {
+                        AppState.recurring.push({ name, amount, currency, category: 'Suscripción', day, type, cardId });
+                        saveState();
+                        renderView('plan');
+                    }
+                });
             };
         }
     }
@@ -1515,6 +1820,9 @@ function renderView(view) {
                 const balARS = parseLocaleFloat(document.getElementById('f-card-balance-ars').value);
                 const balUSD = parseLocaleFloat(document.getElementById('f-card-balance-usd').value);
                 const last4 = document.getElementById('f-card-last4').value;
+                const type = document.getElementById('f-card-type').value;
+                const colorId = document.getElementById('f-card-color').value;
+                const gradient = CARD_GRADIENTS.find(g => g.id === colorId)?.class || CARD_GRADIENTS[0].class;
                 
                 if (name) {
                     AppState.cards.push({
@@ -1522,8 +1830,10 @@ function renderView(view) {
                         name: name.toUpperCase(),
                         balances: { ARS: balARS, USD: balUSD },
                         last4: last4 || '0000',
-                        type: balUSD > 0 && balARS === 0 ? 'mastercard' : 'visa',
-                        gradient: balUSD > 0 ? 'from-slate-800 via-slate-900 to-black' : 'from-emerald-500 via-emerald-600 to-emerald-800'
+                        cardType: type,
+                        colorId: colorId,
+                        type: type === 'debit' ? 'visa' : 'mastercard', 
+                        gradient: gradient
                     });
                     saveState();
                     renderView('vault');
@@ -1599,58 +1909,6 @@ function renderView(view) {
             };
         }
 
-        const addBudgetBtn = document.getElementById('add-budget-btn');
-        if (addBudgetBtn) {
-            addBudgetBtn.onclick = () => {
-                showModal("Nuevo Presupuesto", ViewTemplates.budgetForm(), "save-budget", "Establecer Límite", () => {
-                    const cat = document.getElementById('f-budget-cat').value;
-                    const limit = parseLocaleFloat(document.getElementById('f-budget-limit').value);
-                    const currency = document.getElementById('f-budget-currency').value;
-                    if (cat && !isNaN(limit)) {
-                        AppState.budgets.push({ category: cat, limit, currency });
-                        saveState();
-                        renderView('settings');
-                    }
-                });
-            };
-        }
-
-        const addGoalBtn = document.getElementById('add-goal-btn');
-        if (addGoalBtn) {
-            addGoalBtn.onclick = () => {
-                showModal("Nueva Meta de Ahorro", ViewTemplates.goalForm(), "save-goal", "Crear Meta", () => {
-                    const name = document.getElementById('f-goal-name').value;
-                    const target = parseLocaleFloat(document.getElementById('f-goal-target').value);
-                    const currency = document.getElementById('f-goal-currency').value;
-                    if (name && !isNaN(target)) {
-                        AppState.goals.push({ name, target, current: 0, currency });
-                        saveState();
-                        renderView('settings');
-                    }
-                });
-            };
-        }
-
-        const addRecurringBtn = document.getElementById('add-recurring-btn');
-        if (addRecurringBtn) {
-            addRecurringBtn.onclick = () => {
-                showModal("Nueva Suscripción", ViewTemplates.recurringForm(), "save-rec", "Guardar", () => {
-                    const name = document.getElementById('f-rec-name').value;
-                    const amount = parseLocaleFloat(document.getElementById('f-rec-amount').value);
-                    const day = parseInt(document.getElementById('f-rec-day').value);
-                    const currency = document.getElementById('f-rec-currency').value;
-                    const type = document.getElementById('f-rec-type').value;
-                    const cardId = document.getElementById('f-rec-card').value;
-                    
-                    if (name && !isNaN(amount) && day > 0 && day <= 31) {
-                        AppState.recurring.push({ name, amount, currency, category: 'Suscripción', day, type, cardId });
-                        saveState();
-                        renderView('settings');
-                    }
-                });
-            };
-        }
-
         const logoutBtn = document.getElementById('logout-btn');
         if (logoutBtn) {
             logoutBtn.onclick = () => {
@@ -1710,11 +1968,61 @@ function renderChart() {
     });
 }
 
+
+function renderAnalyticsCharts() {
+    const ctx = document.getElementById('analytics-trend-chart');
+    if (!ctx) return;
+
+    // Last 6 months gasto real
+    const monthlyData = [];
+    const labels = [];
+    
+    for (let i = 5; i >= 0; i--) {
+        const d = new Date();
+        d.setMonth(d.getMonth() - i);
+        const monthStr = d.toLocaleDateString('es-AR', { month: 'short' }).charAt(0).toUpperCase() + d.toLocaleDateString('es-AR', { month: 'short' }).slice(1);
+        labels.push(monthStr);
+        
+        const totalMonth = AppState.movements
+            .filter(m => {
+                const mDate = new Date(m.date === 'Hoy' ? new Date().toISOString() : m.date);
+                return mDate.getMonth() === d.getMonth() && mDate.getFullYear() === d.getFullYear() && m.type === 'expense';
+            })
+            .reduce((acc, m) => acc + (m.currency === 'ARS' ? m.amount : m.amount * AppState.rates.USD_AVG), 0);
+        
+        monthlyData.push(totalMonth);
+    }
+
+    if (window.analyticsChart) window.analyticsChart.destroy();
+
+    window.analyticsChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [{
+                data: monthlyData,
+                backgroundColor: '#10b981',
+                borderRadius: 8,
+                barThickness: 12
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { display: true, grid: { display: false }, ticks: { color: '#94a3b8', font: { size: 10, weight: 'bold' } } },
+                y: { display: false }
+            }
+        }
+    });
+}
+
 function removeBudget(category) {
     if (confirm("¿Eliminar presupuesto?")) {
         AppState.budgets = AppState.budgets.filter(b => b.category !== category);
         saveState();
-        renderView('settings');
+        renderView('plan');
     }
 }
 
@@ -1722,7 +2030,7 @@ function removeGoal(name) {
     if (confirm("¿Eliminar meta?")) {
         AppState.goals = AppState.goals.filter(g => g.name !== name);
         saveState();
-        renderView('settings');
+        renderView('plan');
     }
 }
 
@@ -1756,8 +2064,16 @@ function removeRecurring(name) {
         AppState.recurring = AppState.recurring.filter(r => r.name !== name);
         
         saveState();
-        renderView('settings');
+        renderView('plan');
     }
+}
+
+function toggleDisplayCurrency() {
+    const modes = ['ARS', 'USD', 'MIXED'];
+    const currentIdx = modes.indexOf(AppState.preferences.displayCurrency || 'MIXED');
+    AppState.preferences.displayCurrency = modes[(currentIdx + 1) % modes.length];
+    saveState();
+    renderView('dashboard');
 }
 
 function removeInstallment(id) {
@@ -1769,7 +2085,12 @@ function removeInstallment(id) {
 }
 
 function removeCard(id) {
-    if (confirm("¿Eliminar esta tarjeta? Se borrarán sus saldos.")) {
+    if (confirm("¿Eliminar esta tarjeta? Se borrarán sus saldos y todos los gastos, cuotas y suscripciones asociados.")) {
+        // Cleanup associated data
+        AppState.installments = AppState.installments.filter(ins => ins.cardId != id);
+        AppState.recurring = AppState.recurring.filter(r => r.cardId != id);
+        AppState.movements = AppState.movements.filter(m => m.cardId != id);
+        
         AppState.cards = AppState.cards.filter(c => c.id !== id);
         saveState();
         renderView('vault');
@@ -1819,11 +2140,17 @@ function editCard(id) {
         const balARS = parseLocaleFloat(document.getElementById('f-card-balance-ars').value);
         const balUSD = parseLocaleFloat(document.getElementById('f-card-balance-usd').value);
         const last4 = document.getElementById('f-card-last4').value;
+        const type = document.getElementById('f-card-type').value;
+        const colorId = document.getElementById('f-card-color').value;
+        const gradient = CARD_GRADIENTS.find(g => g.id === colorId)?.class || CARD_GRADIENTS[0].class;
         
         if (name) {
             card.name = name.toUpperCase();
             card.balances = { ARS: balARS, USD: balUSD };
             card.last4 = last4 || '0000';
+            card.cardType = type;
+            card.colorId = colorId;
+            card.gradient = gradient;
             saveState();
             renderView('vault');
         }
@@ -1834,6 +2161,22 @@ function editCard(id) {
     document.getElementById('f-card-balance-ars').value = card.balances?.ARS || 0;
     document.getElementById('f-card-balance-usd').value = card.balances?.USD || 0;
     document.getElementById('f-card-last4').value = card.last4;
+    document.getElementById('f-card-type').value = card.cardType || 'credit';
+    selectCardColor(card.colorId || 'emerald');
+}
+
+function selectCardColor(id) {
+    const input = document.getElementById('f-card-color');
+    if (input) input.value = id;
+    
+    document.querySelectorAll('.color-swatch').forEach(s => {
+        s.classList.remove('border-white', 'scale-110');
+        s.classList.add('border-transparent', 'scale-90');
+        if (s.getAttribute('data-color-id') === id) {
+            s.classList.add('border-white', 'scale-110');
+            s.classList.remove('border-transparent', 'scale-90');
+        }
+    });
 }
 
 document.addEventListener('DOMContentLoaded', initApp);
